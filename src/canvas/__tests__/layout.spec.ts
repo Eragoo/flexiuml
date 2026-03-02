@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { computeLayout } from '../layout'
 import type { Diagram } from '../../core/types'
-import { parsePlantUml } from '../../core/parser'
+import { parseMermaid } from '../../core/parser'
 
 function rectsOverlap(
   a: { x: number; y: number; width: number; height: number },
@@ -418,7 +418,7 @@ describe('computeLayout', () => {
   // ── Integration: full state diagram ─────────────────────────
 
   it('should produce a multi-layer layout for a real state diagram (parse + layout)', () => {
-    const input = `@startuml
+    const input = `stateDiagram-v2
 
 [*] --> Idle
 
@@ -433,11 +433,9 @@ state Processing {
 }
 
 Success --> [*]
-Error --> Idle : retry
+Error --> Idle : retry`
 
-@enduml`
-
-    const diagram = parsePlantUml(input)
+    const diagram = parseMermaid(input)
     const layout = computeLayout(diagram)
 
     // Should have multiple layers (not all on one line)

@@ -1,28 +1,27 @@
 <script setup lang="ts">
 import { ref, watch, nextTick, onMounted, onUnmounted } from 'vue'
-import { parsePlantUml } from './core/parser'
+import { parseMermaid } from './core/parser'
 import { computeLayout } from './canvas/layout'
 import { renderDiagram } from './canvas/renderer'
 import { startDrag, moveDrag, endDrag, IDLE_STATE } from './interaction/drag'
 import type { LayoutDiagram } from './core/types'
 import type { DragState } from './interaction/drag'
 
-const SAMPLE = `@startuml
-[Web App] --> [API Gateway]
-[API Gateway] --> [Auth Service]
-[API Gateway] --> [User Service]
-[User Service] --> [Database]
-[Auth Service] --> [Database]
-@enduml`
+const SAMPLE = `graph TD
+  A[Web App] --> B[API Gateway]
+  B --> C[Auth Service]
+  B --> D[User Service]
+  D --> E[Database]
+  C --> E`
 
-const umlInput = ref(SAMPLE)
+const mermaidInput = ref(SAMPLE)
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 const layoutDiagram = ref<LayoutDiagram>({ blocks: [], connections: [] })
 let dragState: DragState = { ...IDLE_STATE }
 let rafId = 0
 
 function parseAndLayout() {
-  const diagram = parsePlantUml(umlInput.value)
+  const diagram = parseMermaid(mermaidInput.value)
   layoutDiagram.value = computeLayout(diagram)
   redraw()
 }
@@ -92,7 +91,7 @@ function handleResize() {
   scheduleRedraw()
 }
 
-watch(umlInput, () => {
+watch(mermaidInput, () => {
   parseAndLayout()
 })
 
@@ -110,18 +109,18 @@ onUnmounted(() => {
 <template>
   <div class="app-container">
     <header class="app-header">
-      <h1>FlexiUML</h1>
-      <span class="subtitle">Paste PlantUML &middot; Drag blocks to rearrange</span>
+      <h1>FlexiMaid</h1>
+      <span class="subtitle">Paste Mermaid &middot; Drag blocks to rearrange</span>
     </header>
 
     <div class="main-layout">
       <aside class="editor-panel">
-        <label for="uml-input">PlantUML Input</label>
+        <label for="mermaid-input">Mermaid Input</label>
         <textarea
-          id="uml-input"
-          v-model="umlInput"
+          id="mermaid-input"
+          v-model="mermaidInput"
           spellcheck="false"
-          placeholder="@startuml&#10;[A] --> [B]&#10;@enduml"
+          placeholder="graph TD&#10;  A[Service] --> B[DB]"
         />
       </aside>
 
