@@ -30,15 +30,31 @@ const PSEUDO_STATE_TOKEN = '[*]'
 // ── Class diagram patterns ───────────────────────────────────────────────────
 const CLASS_DECL_PATTERN = /^class\s+(\S+)\s*(?:\{|$)/
 
+// ── ER diagram patterns ─────────────────────────────────────────────────────
+// Entity name fragment: plain word (with hyphens), quoted "name", or alias id["label"]
+// Relationship: ENTITY1 ||--|{ ENTITY2 : "label"
+// Cardinality markers: ||, o|, |o, }|, |{, }o, o{ (any combination on either side)
+// Middle: -- (identifying) or .. (non-identifying)
+// Groups: [1]=fromEntity [2]=leftCard [3]=lineStyle [4]=rightCard [5]=toEntity [6]=label
+const ER_RELATIONSHIP =
+  /^("(?:[^"]+)"|[\w][\w-]*(?:\["[^"]*"\])?)\s+([|}{o]{1,2})(--|\.\.)([|}{o]{1,2})\s+("(?:[^"]+)"|[\w][\w-]*(?:\["[^"]*"\])?)\s*:\s*(.+)$/
+
+// Entity attribute block: ENTITY { ... }
+const ER_ENTITY_BLOCK = /^("(?:[^"]+)"|[\w][\w-]*(?:\["[^"]*"\])?)\s*\{$/
+
+// Standalone entity (just a name on a line, no relationship)
+const ER_STANDALONE_ENTITY = /^("(?:[^"]+)"|[\w][\w-]*(?:\["[^"]*"\])?)$/
+
 // ── Diagram type constants ───────────────────────────────────────────────────
 const DIAGRAM_HEADER_PATTERNS: Array<{ pattern: RegExp; type: DiagramType }> = [
   { pattern: /^graph\s+(TD|TB|BT|RL|LR)$/i, type: 'flowchart' },
   { pattern: /^flowchart\s+(TD|TB|BT|RL|LR)$/i, type: 'flowchart' },
   { pattern: /^stateDiagram(?:-v2)?$/i, type: 'state' },
   { pattern: /^classDiagram$/i, type: 'class' },
+  { pattern: /^erDiagram$/i, type: 'erDiagram' },
 ]
 
-type DiagramType = 'flowchart' | 'state' | 'class' | 'unknown'
+type DiagramType = 'flowchart' | 'state' | 'class' | 'erDiagram' | 'unknown'
 
 // ── Skip patterns ────────────────────────────────────────────────────────────
 const SKIP_PATTERNS = [/^\s*$/, /^\s*%%/]
@@ -144,13 +160,19 @@ function parseLines(lines: string[], startIdx: number, scope: ParseScope): numbe
         const id = classDecl[1]!
         ensureBlock(scope.blockMap, { id, label: id, type: 'class' })
         if (line.endsWith('{')) {
-          // Skip until closing brace
-          i++
-          while (i < lines.length && lines[i]!.trim() !== '}') i++
-          if (i < lines.length) i++ // skip the '}'
+          i = skipUntilClosingBrace(lines, i + 1)
         } else {
           i++
         }
+        continue
+      }
+    }
+
+    // ER diagram: relationship, entity block, or standalone entity
+    if (scope.diagramType === 'erDiagram') {
+      const erResult = tryParseErLine(line, scope, lines, i)
+      if (erResult) {
+        i = erResult.nextIndex
         continue
       }
     }
@@ -192,6 +214,17 @@ function parseLines(lines: string[], startIdx: number, scope: ParseScope): numbe
 
 function shouldSkipLine(line: string): boolean {
   return SKIP_PATTERNS.some((p) => p.test(line))
+}
+
+/**
+ * Skip lines until a closing '}' is found. Returns the index after the '}'.
+ * If no closing brace is found, returns the end of the array (graceful handling).
+ */
+function skipUntilClosingBrace(lines: string[], startIdx: number): number {
+  let i = startIdx
+  while (i < lines.length && lines[i]!.trim() !== '}') i++
+  if (i < lines.length) i++ // skip the '}'
+  return i
 }
 
 // ── Pseudo-state resolution (state diagrams) ────────────────────────────────
@@ -321,6 +354,94 @@ function normalizeArrow(arrow: string): ArrowType {
   return '-->'
 }
 
+// ── ER diagram parsing ──────────────────────────────────────────────────────
+
+/**
+ * Parse a single line in an ER diagram context.
+ * Returns the next line index if the line was handled, null otherwise.
+ */
+function tryParseErLine(
+  line: string,
+  scope: ParseScope,
+  lines: string[],
+  currentIndex: number,
+): { nextIndex: number } | null {
+  // Try relationship: ENTITY1 ||--|{ ENTITY2 : label
+  const relMatch = line.match(ER_RELATIONSHIP)
+  if (relMatch) {
+    const fromRef = parseErEntityName(relMatch[1]!)
+    const lineStyle = relMatch[3]!
+    const toRef = parseErEntityName(relMatch[5]!)
+    const label = relMatch[6]!.trim().replace(/^"(.*)"$/, '$1')
+
+    ensureBlock(scope.blockMap, fromRef)
+    ensureBlock(scope.blockMap, toRef)
+
+    const arrowType = normalizeErRelationship(lineStyle)
+    const conn: Connection = {
+      fromId: fromRef.id,
+      toId: toRef.id,
+      arrowType,
+    }
+    if (label) conn.label = label
+    scope.connections.push(conn)
+    return { nextIndex: currentIndex + 1 }
+  }
+
+  // Try entity attribute block: ENTITY { ... }
+  const blockMatch = line.match(ER_ENTITY_BLOCK)
+  if (blockMatch) {
+    const ref = parseErEntityName(blockMatch[1]!)
+    ensureBlock(scope.blockMap, ref)
+    return { nextIndex: skipUntilClosingBrace(lines, currentIndex + 1) }
+  }
+
+  // Standalone entity: any unrecognized word becomes an entity.
+  // This matches Mermaid's own behavior for erDiagram.
+  const standaloneMatch = line.match(ER_STANDALONE_ENTITY)
+  if (standaloneMatch) {
+    const ref = parseErEntityName(standaloneMatch[1]!)
+    ensureBlock(scope.blockMap, ref)
+    return { nextIndex: currentIndex + 1 }
+  }
+
+  return null
+}
+
+/**
+ * Parse an ER entity name, handling quoted names and aliases.
+ * - `CUSTOMER` -> id: "CUSTOMER", label: "CUSTOMER"
+ * - `"Customer Name"` -> id: "Customer Name", label: "Customer Name"
+ * - `p["Customer"]` -> id: "p", label: "Customer"
+ */
+function parseErEntityName(raw: string): ParsedBlockRef {
+  const trimmed = raw.trim()
+
+  // Quoted name: "Some Name"
+  if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+    const name = trimmed.slice(1, -1)
+    return { id: name, label: name, type: 'entity' }
+  }
+
+  // Aliased name: entityId["Display Label"] (supports hyphens in ID)
+  const aliasMatch = trimmed.match(/^([\w][\w-]*)\["([^"]*)"\]$/)
+  if (aliasMatch) {
+    return { id: aliasMatch[1]!, label: aliasMatch[2]!, type: 'entity' }
+  }
+
+  // Plain name
+  return { id: trimmed, label: trimmed, type: 'entity' }
+}
+
+/**
+ * Normalize ER relationship line style to our ArrowType.
+ * ER relationships are undirected (they express cardinality, not direction),
+ * so we map identifying relationships to '--' and non-identifying to '..'.
+ */
+function normalizeErRelationship(lineStyle: string): ArrowType {
+  return lineStyle === '..' ? '..' : '--'
+}
+
 // ── Block reference parsing ──────────────────────────────────────────────────
 
 function parseBlockRef(token: string, scope: ParseScope): ParsedBlockRef | null {
@@ -372,6 +493,7 @@ function shapeToBlockTypeFlowchart(openBracket: string): BlockType {
 function shapeToBlockType(openBracket: string, scope: ParseScope): BlockType {
   if (scope.diagramType === 'class') return 'class'
   if (scope.diagramType === 'state') return 'state'
+  if (scope.diagramType === 'erDiagram') return 'entity'
   return shapeToBlockTypeFlowchart(openBracket)
 }
 
@@ -384,6 +506,8 @@ function defaultBlockType(scope: ParseScope): BlockType {
       return 'class'
     case 'state':
       return 'state'
+    case 'erDiagram':
+      return 'entity'
     default:
       return 'component'
   }

@@ -1,27 +1,20 @@
 # FlexiMaid
 
-This template should help get you started developing with Vue 3 in Vite.
+A Vue 3 + TypeScript web app that lets users paste **Mermaid** diagram text and visually rearrange diagram blocks on an HTML5 Canvas via drag-and-drop.
 
-## Recommended IDE Setup
+## Supported Diagram Types
 
-[VS Code](https://code.visualstudio.com/) + [Vue (Official)](https://marketplace.visualstudio.com/items?itemName=Vue.volar) (and disable Vetur).
+- **Flowchart** (`graph TD` / `flowchart LR`) - nodes, arrows, labels, shapes
+- **State Diagram** (`stateDiagram-v2`) - transitions, pseudo-states, composite states
+- **Class Diagram** (`classDiagram`) - classes, relationships, body skipping
+- **ER Diagram** (`erDiagram`) - entities, relationships with cardinality, attributes
 
-## Recommended Browser Setup
+## Next Steps - Planned Diagram Types
 
-- Chromium-based browsers (Chrome, Edge, Brave, etc.):
-  - [Vue.js devtools](https://chromewebstore.google.com/detail/vuejs-devtools/nhdogjmejiglipccpnnnanhbledajbpd)
-  - [Turn on Custom Object Formatter in Chrome DevTools](http://bit.ly/object-formatters)
-- Firefox:
-  - [Vue.js devtools](https://addons.mozilla.org/en-US/firefox/addon/vue-js-devtools/)
-  - [Turn on Custom Object Formatter in Firefox DevTools](https://fxdx.dev/firefox-devtools-custom-object-formatters/)
+The following Mermaid diagram types are good candidates for drag-and-rearrange and are planned for future implementation:
 
-## Type Support for `.vue` Imports in TS
-
-TypeScript cannot handle type information for `.vue` imports by default, so we replace the `tsc` CLI with `vue-tsc` for type checking. In editors, we need [Volar](https://marketplace.visualstudio.com/items?itemName=Vue.volar) to make the TypeScript language service aware of `.vue` types.
-
-## Customize configuration
-
-See [Vite Configuration Reference](https://vite.dev/config/).
+- **Block Diagram** - explicitly about author-controlled layout; aligns perfectly with drag-and-drop
+- **Architecture Diagram** - groups, services, junctions, edges; groups map to composite blocks
 
 ## Project Setup
 

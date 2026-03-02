@@ -1,4 +1,4 @@
-export type BlockType = 'component' | 'class' | 'actor' | 'usecase' | 'package' | 'state' | 'pseudostate'
+export type BlockType = 'component' | 'class' | 'actor' | 'usecase' | 'package' | 'state' | 'pseudostate' | 'entity'
 
 export type ArrowType = '-->' | '<--' | '--' | '..' | '..>' | '<..'
 

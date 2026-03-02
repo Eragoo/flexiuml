@@ -595,4 +595,212 @@ describe('parseMermaid', () => {
     expect(animal).toBeDefined()
     expect(animal!.type).toBe('class')
   })
+
+  // ── ER Diagram ──────────────────────────────────────────────
+
+  it('should parse ER diagram with a simple identifying relationship', () => {
+    const input = `erDiagram
+    CUSTOMER ||--o{ ORDER : places`
+    const diagram = parseMermaid(input)
+
+    expect(diagram.blocks).toHaveLength(2)
+    expect(diagram.blocks.every((b) => b.type === 'entity')).toBe(true)
+    expect(diagram.blocks.find((b) => b.id === 'CUSTOMER')).toBeDefined()
+    expect(diagram.blocks.find((b) => b.id === 'ORDER')).toBeDefined()
+    expect(diagram.connections).toHaveLength(1)
+    expect(diagram.connections[0]).toEqual({
+      fromId: 'CUSTOMER',
+      toId: 'ORDER',
+      arrowType: '--',
+      label: 'places',
+    })
+  })
+
+  it('should parse ER diagram with non-identifying (dotted) relationship', () => {
+    const input = `erDiagram
+    PERSON }|..|{ CAR : drives`
+    const diagram = parseMermaid(input)
+
+    expect(diagram.blocks).toHaveLength(2)
+    expect(diagram.connections).toHaveLength(1)
+    expect(diagram.connections[0]).toEqual({
+      fromId: 'PERSON',
+      toId: 'CAR',
+      arrowType: '..',
+      label: 'drives',
+    })
+  })
+
+  it('should parse multiple ER relationships', () => {
+    const input = `erDiagram
+    CUSTOMER ||--o{ ORDER : places
+    ORDER ||--|{ LINE-ITEM : contains
+    CUSTOMER }|..|{ DELIVERY-ADDRESS : uses`
+    const diagram = parseMermaid(input)
+
+    expect(diagram.blocks).toHaveLength(4)
+    expect(diagram.connections).toHaveLength(3)
+    const ids = diagram.blocks.map((b) => b.id).sort()
+    expect(ids).toEqual(['CUSTOMER', 'DELIVERY-ADDRESS', 'LINE-ITEM', 'ORDER'])
+  })
+
+  it('should parse ER entity with attribute block (skip attributes)', () => {
+    const input = `erDiagram
+    CUSTOMER {
+      string name
+      int age
+    }
+    CUSTOMER ||--o{ ORDER : places`
+    const diagram = parseMermaid(input)
+
+    const customer = diagram.blocks.find((b) => b.id === 'CUSTOMER')
+    expect(customer).toBeDefined()
+    expect(customer!.type).toBe('entity')
+    expect(diagram.connections).toHaveLength(1)
+  })
+
+  it('should parse standalone entity without relationships', () => {
+    const input = `erDiagram
+    CUSTOMER`
+    const diagram = parseMermaid(input)
+
+    expect(diagram.blocks).toHaveLength(1)
+    expect(diagram.blocks[0]).toEqual({
+      id: 'CUSTOMER',
+      label: 'CUSTOMER',
+      type: 'entity',
+    })
+    expect(diagram.connections).toHaveLength(0)
+  })
+
+  it('should parse ER diagram with quoted relationship label', () => {
+    const input = `erDiagram
+    CUSTOMER ||--o{ ORDER : "places orders for"`
+    const diagram = parseMermaid(input)
+
+    expect(diagram.connections).toHaveLength(1)
+    expect(diagram.connections[0]!.label).toBe('places orders for')
+  })
+
+  it('should deduplicate entities across relationships and attribute blocks', () => {
+    const input = `erDiagram
+    CUSTOMER {
+      string name
+    }
+    CUSTOMER ||--o{ ORDER : places
+    ORDER ||--|{ LINE-ITEM : contains`
+    const diagram = parseMermaid(input)
+
+    expect(diagram.blocks.filter((b) => b.id === 'CUSTOMER')).toHaveLength(1)
+    expect(diagram.blocks).toHaveLength(3)
+  })
+
+  it('should parse ER diagram with all cardinality types', () => {
+    const input = `erDiagram
+    A ||--|| B : "exactly one to exactly one"
+    C |o--o| D : "zero or one to zero or one"
+    E }|--|{ F : "one or more to one or more"
+    G }o--o{ H : "zero or more to zero or more"`
+    const diagram = parseMermaid(input)
+
+    expect(diagram.blocks).toHaveLength(8)
+    expect(diagram.connections).toHaveLength(4)
+    // All identifying (--) relationships
+    expect(diagram.connections.every((c) => c.arrowType === '--')).toBe(true)
+  })
+
+  it('should handle ER entity with unterminated attribute block gracefully', () => {
+    const input = `erDiagram
+    CUSTOMER {
+      string name
+      int age`
+    const diagram = parseMermaid(input)
+
+    // Block never closed, but parser should not crash
+    const customer = diagram.blocks.find((b) => b.id === 'CUSTOMER')
+    expect(customer).toBeDefined()
+    expect(customer!.type).toBe('entity')
+  })
+
+  it('should ignore blank lines and comments in ER diagrams', () => {
+    const input = `erDiagram
+    %% This is a comment
+    CUSTOMER ||--o{ ORDER : places
+
+    %% Another comment
+    ORDER ||--|{ PRODUCT : contains`
+    const diagram = parseMermaid(input)
+
+    expect(diagram.blocks).toHaveLength(3)
+    expect(diagram.connections).toHaveLength(2)
+  })
+
+  it('should return empty diagram for erDiagram with only header', () => {
+    const diagram = parseMermaid('erDiagram')
+    expect(diagram.blocks).toHaveLength(0)
+    expect(diagram.connections).toHaveLength(0)
+  })
+
+  it('should parse ER diagram with hyphenated entity names', () => {
+    const input = `erDiagram
+    ORDER-ITEM ||--|| PRODUCT-SKU : references`
+    const diagram = parseMermaid(input)
+
+    expect(diagram.blocks).toHaveLength(2)
+    expect(diagram.blocks.find((b) => b.id === 'ORDER-ITEM')).toBeDefined()
+    expect(diagram.blocks.find((b) => b.id === 'PRODUCT-SKU')).toBeDefined()
+  })
+
+  it('should parse ER entity name aliases with square brackets', () => {
+    const input = `erDiagram
+    p["Customer"] ||--o{ o["Order"] : places`
+    const diagram = parseMermaid(input)
+
+    expect(diagram.blocks).toHaveLength(2)
+    const customer = diagram.blocks.find((b) => b.id === 'p')
+    expect(customer).toBeDefined()
+    expect(customer!.label).toBe('Customer')
+    const order = diagram.blocks.find((b) => b.id === 'o')
+    expect(order).toBeDefined()
+    expect(order!.label).toBe('Order')
+  })
+
+  it('should parse ER diagram with quoted entity names in relationships', () => {
+    const input = `erDiagram
+    "Customer Name" ||--o{ "Order Record" : places`
+    const diagram = parseMermaid(input)
+
+    expect(diagram.blocks).toHaveLength(2)
+    const customer = diagram.blocks.find((b) => b.id === 'Customer Name')
+    expect(customer).toBeDefined()
+    expect(customer!.label).toBe('Customer Name')
+    const order = diagram.blocks.find((b) => b.id === 'Order Record')
+    expect(order).toBeDefined()
+    expect(order!.label).toBe('Order Record')
+    expect(diagram.connections).toHaveLength(1)
+    expect(diagram.connections[0]!.label).toBe('places')
+  })
+
+  it('should parse ER diagram with mixed entity blocks and relationships', () => {
+    const input = `erDiagram
+    CUSTOMER {
+      string name PK
+      string email
+    }
+    ORDER {
+      int id PK
+      date created
+    }
+    CUSTOMER ||--o{ ORDER : places
+    ORDER ||--|{ LINE-ITEM : contains
+    LINE-ITEM {
+      int quantity
+      float price
+    }`
+    const diagram = parseMermaid(input)
+
+    expect(diagram.blocks).toHaveLength(3)
+    expect(diagram.connections).toHaveLength(2)
+    expect(diagram.blocks.every((b) => b.type === 'entity')).toBe(true)
+  })
 })
