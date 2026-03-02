@@ -8,6 +8,10 @@ const LABEL_COLOR = '#64748b'
 const ARROWHEAD_SIZE = 10
 const FONT = '14px sans-serif'
 const LABEL_FONT = '12px sans-serif'
+const PSEUDO_FILL = '#1e293b'
+const COMPOSITE_FILL = '#f8fafc'
+const COMPOSITE_STROKE = '#94a3b8'
+const COMPOSITE_LABEL_FONT = 'bold 14px sans-serif'
 
 export function renderDiagram(
   ctx: CanvasRenderingContext2D,
@@ -17,13 +21,18 @@ export function renderDiagram(
 ): void {
   ctx.clearRect(0, 0, canvasWidth, canvasHeight)
 
-  // Build a lookup map for O(1) block access by id
+  // Build a lookup map for O(1) block access by id (including children of composites)
   const blockMap = new Map<string, LayoutBlock>()
   for (const block of diagram.blocks) {
     blockMap.set(block.id, block)
+    if (block.children) {
+      for (const child of block.children) {
+        blockMap.set(child.id, child)
+      }
+    }
   }
 
-  // Draw connections first (behind blocks)
+  // Draw top-level connections first (behind blocks)
   for (const conn of diagram.connections) {
     const from = blockMap.get(conn.fromId)
     const to = blockMap.get(conn.toId)
@@ -34,7 +43,74 @@ export function renderDiagram(
 
   // Draw blocks on top
   for (const block of diagram.blocks) {
+    drawBlockDispatch(ctx, block, blockMap)
+  }
+}
+
+/**
+ * Dispatch to the appropriate drawing function based on block type.
+ */
+function drawBlockDispatch(
+  ctx: CanvasRenderingContext2D,
+  block: LayoutBlock,
+  blockMap: Map<string, LayoutBlock>,
+): void {
+  if (block.type === 'pseudostate') {
+    drawPseudoState(ctx, block)
+  } else if (block.children && block.children.length > 0) {
+    drawCompositeState(ctx, block, blockMap)
+  } else {
     drawBlock(ctx, block)
+  }
+}
+
+function drawPseudoState(ctx: CanvasRenderingContext2D, block: LayoutBlock): void {
+  const cx = block.x + block.width / 2
+  const cy = block.y + block.height / 2
+  const radius = Math.min(block.width, block.height) / 2
+
+  ctx.beginPath()
+  ctx.arc(cx, cy, radius, 0, Math.PI * 2)
+  ctx.fillStyle = PSEUDO_FILL
+  ctx.fill()
+}
+
+function drawCompositeState(
+  ctx: CanvasRenderingContext2D,
+  block: LayoutBlock,
+  blockMap: Map<string, LayoutBlock>,
+): void {
+  // Fill background
+  ctx.fillStyle = COMPOSITE_FILL
+  ctx.fillRect(block.x, block.y, block.width, block.height)
+
+  // Stroke border
+  ctx.strokeStyle = COMPOSITE_STROKE
+  ctx.lineWidth = 1.5
+  ctx.strokeRect(block.x, block.y, block.width, block.height)
+
+  // Label (top-left)
+  ctx.fillStyle = BLOCK_TEXT_COLOR
+  ctx.font = COMPOSITE_LABEL_FONT
+  ctx.textAlign = 'left'
+  ctx.textBaseline = 'top'
+  ctx.fillText(block.label, block.x + 10, block.y + 8)
+
+  // Draw child connections
+  if (block.childConnections) {
+    for (const conn of block.childConnections) {
+      const from = blockMap.get(conn.fromId)
+      const to = blockMap.get(conn.toId)
+      if (!from || !to) continue
+      drawConnection(ctx, from, to, conn)
+    }
+  }
+
+  // Draw child blocks
+  if (block.children) {
+    for (const child of block.children) {
+      drawBlockDispatch(ctx, child, blockMap)
+    }
   }
 }
 

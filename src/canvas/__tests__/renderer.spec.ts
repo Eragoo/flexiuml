@@ -19,6 +19,7 @@ function createMockContext(): CanvasRenderingContext2D {
     translate: vi.fn(),
     rotate: vi.fn(),
     setLineDash: vi.fn(),
+    arc: vi.fn(),
     fillStyle: '',
     strokeStyle: '',
     lineWidth: 1,
@@ -204,5 +205,62 @@ describe('renderDiagram', () => {
     const clearOrder = (ctx.clearRect as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]!
     const fillOrder = (ctx.fillRect as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]!
     expect(clearOrder).toBeLessThan(fillOrder)
+  })
+
+  // ── Pseudo-state rendering ───────────────────────────────────
+
+  it('should draw pseudo-state as a filled circle (not a rectangle)', () => {
+    const diagram: LayoutDiagram = {
+      blocks: [
+        { id: '__start_1', label: '[*]', type: 'pseudostate', x: 50, y: 50, width: 20, height: 20 },
+      ],
+      connections: [],
+    }
+
+    renderDiagram(ctx, diagram, 800, 600)
+
+    // Should draw a circle via arc, not fillRect for the pseudo-state
+    expect(ctx.arc).toHaveBeenCalled()
+    // Should NOT draw a text label for pseudo-states
+    expect(ctx.fillText).not.toHaveBeenCalled()
+  })
+
+  // ── Composite state rendering ────────────────────────────────
+
+  it('should draw composite state as a container with label and children', () => {
+    const diagram: LayoutDiagram = {
+      blocks: [
+        {
+          id: 'Processing',
+          label: 'Processing',
+          type: 'state',
+          x: 20,
+          y: 20,
+          width: 300,
+          height: 200,
+          children: [
+            { id: 'X', label: 'X', type: 'component', x: 40, y: 70, width: 80, height: 40 },
+            { id: 'Y', label: 'Y', type: 'component', x: 160, y: 70, width: 80, height: 40 },
+          ],
+          childConnections: [{ fromId: 'X', toId: 'Y', arrowType: '-->' }],
+        },
+      ],
+      connections: [],
+    }
+
+    renderDiagram(ctx, diagram, 800, 600)
+
+    // Should draw the container border (strokeRect for the composite)
+    expect(ctx.strokeRect).toHaveBeenCalled()
+    // Should draw the composite label
+    expect(ctx.fillText).toHaveBeenCalledWith('Processing', expect.any(Number), expect.any(Number))
+    // Should draw child blocks (fillRect for X and Y)
+    expect(ctx.fillRect).toHaveBeenCalledWith(40, 70, 80, 40)
+    expect(ctx.fillRect).toHaveBeenCalledWith(160, 70, 80, 40)
+    // Should draw child labels
+    expect(ctx.fillText).toHaveBeenCalledWith('X', expect.any(Number), expect.any(Number))
+    expect(ctx.fillText).toHaveBeenCalledWith('Y', expect.any(Number), expect.any(Number))
+    // Should draw child connections (beginPath for the arrow between X and Y)
+    expect(ctx.beginPath).toHaveBeenCalled()
   })
 })

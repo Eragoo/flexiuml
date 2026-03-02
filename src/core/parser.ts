@@ -4,57 +4,141 @@ const ARROW_PATTERN = /^(.+?)\s*(-->|<--|--|\.\.>|<\.\.|\.\.)\s*(.+?)(?:\s*:\s*(
 
 const COMPONENT_PATTERN = /^\[("?)(.+?)\1\]$/
 
-const KEYWORD_BLOCK_PATTERN = /^(class|actor|usecase|package)\s+(?:"([^"]+)"\s+as\s+)?(\S+)$/
+const KEYWORD_BLOCK_PATTERN =
+  /^(class|actor|usecase|package|state)\s+(?:"([^"]+)"\s+as\s+)?(\S+)$/
 
 const SKIP_PATTERNS = [/^\s*$/, /^\s*'/, /^\s*@startuml\s*$/, /^\s*@enduml\s*$/]
 
+const PSEUDO_STATE_TOKEN = '[*]'
+
+const STATE_OPEN_PATTERN = /^state\s+(\S+)\s*\{$/
+
+interface ParsedBlockRef {
+  id: string
+  label: string
+  type: BlockType
+}
+
+interface ParseScope {
+  blockMap: Map<string, Block>
+  connections: Connection[]
+  pseudoCounter: { start: number; end: number }
+}
+
 export function parsePlantUml(input: string): Diagram {
-  const blockMap = new Map<string, Block>()
-  const connections: Connection[] = []
-
   const lines = input.split('\n').map((l) => l.trim())
+  const scope: ParseScope = {
+    blockMap: new Map(),
+    connections: [],
+    pseudoCounter: { start: 0, end: 0 },
+  }
 
-  for (const line of lines) {
-    if (shouldSkipLine(line)) continue
+  parseLines(lines, 0, scope)
 
-    const arrowMatch = tryParseConnection(line)
-    if (arrowMatch) {
-      const { from, to, arrowType, label } = arrowMatch
-      ensureBlock(blockMap, from)
-      ensureBlock(blockMap, to)
-      const conn: Connection = {
-        fromId: from.id,
-        toId: to.id,
-        arrowType,
-      }
-      if (label) conn.label = label
-      connections.push(conn)
+  return {
+    blocks: Array.from(scope.blockMap.values()),
+    connections: scope.connections,
+  }
+}
+
+/**
+ * Parse lines starting at `startIdx` into the given scope.
+ * Returns the index of the first line NOT consumed (i.e. after a closing `}`).
+ */
+function parseLines(lines: string[], startIdx: number, scope: ParseScope): number {
+  let i = startIdx
+  while (i < lines.length) {
+    const line = lines[i]!
+    if (shouldSkipLine(line)) {
+      i++
       continue
     }
 
+    // Closing brace ends current scope (handled by caller for composite states)
+    if (line === '}') {
+      return i + 1
+    }
+
+    // Composite state: state Foo {
+    const stateOpen = line.match(STATE_OPEN_PATTERN)
+    if (stateOpen) {
+      const stateId = stateOpen[1]!
+      const childScope: ParseScope = {
+        blockMap: new Map(),
+        connections: [],
+        pseudoCounter: scope.pseudoCounter, // share counter for globally unique IDs
+      }
+
+      i = parseLines(lines, i + 1, childScope)
+
+      const compositeBlock: Block = {
+        id: stateId,
+        label: stateId,
+        type: 'state',
+        children: Array.from(childScope.blockMap.values()),
+        childConnections: childScope.connections,
+      }
+      scope.blockMap.set(stateId, compositeBlock)
+      continue
+    }
+
+    // Arrow / connection
+    const arrowMatch = tryParseConnection(line)
+    if (arrowMatch) {
+      const { from, to, arrowType, label } = arrowMatch
+      const resolvedFrom = resolvePseudo(from, 'from', scope)
+      const resolvedTo = resolvePseudo(to, 'to', scope)
+      ensureBlock(scope.blockMap, resolvedFrom)
+      ensureBlock(scope.blockMap, resolvedTo)
+      const conn: Connection = {
+        fromId: resolvedFrom.id,
+        toId: resolvedTo.id,
+        arrowType,
+      }
+      if (label) conn.label = label
+      scope.connections.push(conn)
+      i++
+      continue
+    }
+
+    // Standalone block declaration
     const block = tryParseSingleBlock(line)
     if (block) {
-      ensureBlock(blockMap, block)
+      ensureBlock(scope.blockMap, block)
+      i++
       continue
     }
 
     // Malformed line - skip silently
+    i++
   }
-
-  return {
-    blocks: Array.from(blockMap.values()),
-    connections,
-  }
+  return i
 }
 
 function shouldSkipLine(line: string): boolean {
   return SKIP_PATTERNS.some((p) => p.test(line))
 }
 
-interface ParsedBlockRef {
-  id: string
-  label: string
-  type: BlockType
+/**
+ * Resolve a [*] pseudo-state reference into a unique start or end pseudo-state.
+ * `role` indicates whether this token appeared as the source ('from') or target ('to') of a connection.
+ */
+function resolvePseudo(
+  ref: ParsedBlockRef,
+  role: 'from' | 'to',
+  scope: ParseScope,
+): ParsedBlockRef {
+  if (ref.id !== '*') return ref
+
+  if (role === 'from') {
+    scope.pseudoCounter.start++
+    const id = `__start_${scope.pseudoCounter.start}`
+    return { id, label: '[*]', type: 'pseudostate' }
+  } else {
+    scope.pseudoCounter.end++
+    const id = `__end_${scope.pseudoCounter.end}`
+    return { id, label: '[*]', type: 'pseudostate' }
+  }
 }
 
 function tryParseConnection(
@@ -82,6 +166,11 @@ function tryParseConnection(
 }
 
 function parseBlockRef(token: string): ParsedBlockRef | null {
+  // Pseudo-state [*]
+  if (token === PSEUDO_STATE_TOKEN) {
+    return { id: '*', label: '[*]', type: 'pseudostate' }
+  }
+
   // Try component syntax: [Name] or ["Name"]
   const compMatch = token.match(COMPONENT_PATTERN)
   if (compMatch) {
@@ -89,7 +178,7 @@ function parseBlockRef(token: string): ParsedBlockRef | null {
     return { id: label, label, type: 'component' }
   }
 
-  // Try keyword syntax: class Foo, actor User, etc.
+  // Try keyword syntax: class Foo, actor User, state X, etc.
   const kwMatch = token.match(KEYWORD_BLOCK_PATTERN)
   if (kwMatch) {
     const type = (kwMatch[1] ?? 'component') as BlockType
@@ -114,7 +203,7 @@ function tryParseSingleBlock(line: string): ParsedBlockRef | null {
     return { id: label, label, type: 'component' }
   }
 
-  // Keyword block: class Foo, actor User, usecase "Login" as UC1
+  // Keyword block: class Foo, actor User, state X, usecase "Login" as UC1
   const kwMatch = line.match(KEYWORD_BLOCK_PATTERN)
   if (kwMatch) {
     const type = (kwMatch[1] ?? 'component') as BlockType

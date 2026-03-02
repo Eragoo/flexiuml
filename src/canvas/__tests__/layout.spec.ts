@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { computeLayout } from '../layout'
 import type { Diagram } from '../../core/types'
+import { parsePlantUml } from '../../core/parser'
 
 function rectsOverlap(
   a: { x: number; y: number; width: number; height: number },
@@ -301,5 +302,181 @@ describe('computeLayout', () => {
     const b = layout.blocks.find((b) => b.id === 'B')!
 
     expect(a.y).toBeLessThan(b.y)
+  })
+
+  // ── Pseudo-state [*] layout ─────────────────────────────────
+
+  it('should place pseudo-state start nodes above their targets', () => {
+    const diagram: Diagram = {
+      blocks: [
+        { id: '__start_1', label: '[*]', type: 'pseudostate' },
+        { id: 'Idle', label: 'Idle', type: 'component' },
+      ],
+      connections: [{ fromId: '__start_1', toId: 'Idle', arrowType: '-->' }],
+    }
+
+    const layout = computeLayout(diagram)
+    const start = layout.blocks.find((b) => b.id === '__start_1')!
+    const idle = layout.blocks.find((b) => b.id === 'Idle')!
+
+    expect(start.y).toBeLessThan(idle.y)
+    // Pseudo-state should have small dimensions
+    expect(start.width).toBeLessThanOrEqual(30)
+    expect(start.height).toBeLessThanOrEqual(30)
+  })
+
+  it('should place pseudo-state end nodes below their sources', () => {
+    const diagram: Diagram = {
+      blocks: [
+        { id: 'Success', label: 'Success', type: 'component' },
+        { id: '__end_1', label: '[*]', type: 'pseudostate' },
+      ],
+      connections: [{ fromId: 'Success', toId: '__end_1', arrowType: '-->' }],
+    }
+
+    const layout = computeLayout(diagram)
+    const success = layout.blocks.find((b) => b.id === 'Success')!
+    const end = layout.blocks.find((b) => b.id === '__end_1')!
+
+    expect(success.y).toBeLessThan(end.y)
+  })
+
+  // ── Composite state layout ──────────────────────────────────
+
+  it('should lay out composite state children inside the parent', () => {
+    const diagram: Diagram = {
+      blocks: [
+        {
+          id: 'Processing',
+          label: 'Processing',
+          type: 'state',
+          children: [
+            { id: '__start_1', label: '[*]', type: 'pseudostate' },
+            { id: 'Validating', label: 'Validating', type: 'component' },
+            { id: 'Executing', label: 'Executing', type: 'component' },
+            { id: '__end_1', label: '[*]', type: 'pseudostate' },
+          ],
+          childConnections: [
+            { fromId: '__start_1', toId: 'Validating', arrowType: '-->' },
+            { fromId: 'Validating', toId: 'Executing', arrowType: '-->' },
+            { fromId: 'Executing', toId: '__end_1', arrowType: '-->' },
+          ],
+        },
+      ],
+      connections: [],
+    }
+
+    const layout = computeLayout(diagram)
+    const processing = layout.blocks.find((b) => b.id === 'Processing')!
+
+    expect(processing).toBeDefined()
+    // Composite state should be large enough to contain children
+    expect(processing.width).toBeGreaterThan(100)
+    expect(processing.height).toBeGreaterThan(100)
+
+    // Children should be laid out
+    expect(processing.children).toBeDefined()
+    expect(processing.children!.length).toBe(4)
+
+    // All children should be inside the parent bounds
+    for (const child of processing.children!) {
+      expect(child.x).toBeGreaterThanOrEqual(processing.x)
+      expect(child.y).toBeGreaterThanOrEqual(processing.y)
+      expect(child.x + child.width).toBeLessThanOrEqual(processing.x + processing.width)
+      expect(child.y + child.height).toBeLessThanOrEqual(processing.y + processing.height)
+    }
+  })
+
+  it('should size composite state based on its children', () => {
+    const diagram: Diagram = {
+      blocks: [
+        { id: 'A', label: 'A', type: 'component' },
+        {
+          id: 'Composite',
+          label: 'Composite',
+          type: 'state',
+          children: [
+            { id: 'X', label: 'X', type: 'component' },
+            { id: 'Y', label: 'Y', type: 'component' },
+          ],
+          childConnections: [{ fromId: 'X', toId: 'Y', arrowType: '-->' }],
+        },
+      ],
+      connections: [{ fromId: 'A', toId: 'Composite', arrowType: '-->' }],
+    }
+
+    const layout = computeLayout(diagram)
+    const composite = layout.blocks.find((b) => b.id === 'Composite')!
+    const a = layout.blocks.find((b) => b.id === 'A')!
+
+    // Composite should be below A
+    expect(a.y).toBeLessThan(composite.y)
+    // Composite should be larger than a normal block
+    expect(composite.height).toBeGreaterThan(a.height)
+  })
+
+  // ── Integration: full state diagram ─────────────────────────
+
+  it('should produce a multi-layer layout for a real state diagram (parse + layout)', () => {
+    const input = `@startuml
+
+[*] --> Idle
+
+Idle --> Processing : start
+Processing --> Success : done
+Processing --> Error : fail
+
+state Processing {
+    [*] --> Validating
+    Validating --> Executing
+    Executing --> [*]
+}
+
+Success --> [*]
+Error --> Idle : retry
+
+@enduml`
+
+    const diagram = parsePlantUml(input)
+    const layout = computeLayout(diagram)
+
+    // Should have multiple layers (not all on one line)
+    const yValues = [...new Set(layout.blocks.map((b) => b.y))]
+    expect(yValues.length).toBeGreaterThanOrEqual(3)
+
+    // Start pseudo-state should be above Idle
+    const startBlock = layout.blocks.find((b) => b.type === 'pseudostate' && b.id.includes('start'))!
+    const idle = layout.blocks.find((b) => b.id === 'Idle')!
+    expect(startBlock).toBeDefined()
+    expect(idle).toBeDefined()
+    expect(startBlock.y).toBeLessThan(idle.y)
+
+    // Processing (composite) should be below Idle
+    const processing = layout.blocks.find((b) => b.id === 'Processing')!
+    expect(processing).toBeDefined()
+    expect(idle.y).toBeLessThan(processing.y)
+
+    // Processing should have inner children laid out
+    expect(processing.children).toBeDefined()
+    expect(processing.children!.length).toBeGreaterThanOrEqual(2)
+
+    // Success and Error should be siblings (same layer, below Processing)
+    const success = layout.blocks.find((b) => b.id === 'Success')!
+    const error = layout.blocks.find((b) => b.id === 'Error')!
+    expect(success).toBeDefined()
+    expect(error).toBeDefined()
+    expect(success.y).toBe(error.y)
+    expect(processing.y).toBeLessThan(success.y)
+
+    // No blocks should overlap
+    for (let i = 0; i < layout.blocks.length; i++) {
+      for (let j = i + 1; j < layout.blocks.length; j++) {
+        const a = layout.blocks[i]
+        const b = layout.blocks[j]
+        if (a && b) {
+          expect(rectsOverlap(a, b)).toBe(false)
+        }
+      }
+    }
   })
 })

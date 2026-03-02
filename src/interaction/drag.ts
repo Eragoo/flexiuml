@@ -42,6 +42,15 @@ export function startDrag(diagram: LayoutDiagram, x: number, y: number): DragSta
   }
 }
 
+/** Recursively translate a block and all its children by (dx, dy). */
+function translateBlock(block: LayoutBlock, dx: number, dy: number): LayoutBlock {
+  const moved: LayoutBlock = { ...block, x: block.x + dx, y: block.y + dy }
+  if (block.children) {
+    moved.children = block.children.map((child) => translateBlock(child, dx, dy))
+  }
+  return moved
+}
+
 export function moveDrag(
   diagram: LayoutDiagram,
   state: DragState,
@@ -57,9 +66,14 @@ export function moveDrag(
 
   return {
     ...diagram,
-    blocks: diagram.blocks.map((b) =>
-      b.id === state.blockId ? { ...b, x: newX, y: newY } : b,
-    ),
+    blocks: diagram.blocks.map((b) => {
+      if (b.id !== state.blockId) return b
+
+      const dx = newX - b.x
+      const dy = newY - b.y
+
+      return translateBlock(b, dx, dy)
+    }),
   }
 }
 
