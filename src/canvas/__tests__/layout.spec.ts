@@ -155,39 +155,151 @@ describe('computeLayout', () => {
     }
   })
 
-  it('should align blocks in the same column to the same x-coordinate', () => {
-    // With COLUMNS=4, blocks at indices 0 and 4 are both in column 0
-    const blocks = Array.from({ length: 5 }, (_, i) => ({
-      id: `B${i}`,
-      label: i === 0 ? 'A Very Wide Block Name' : 'X',
-      type: 'component' as const,
-    }))
-    const diagram: Diagram = { blocks, connections: [] }
-
-    const layout = computeLayout(diagram)
-    const b0 = layout.blocks[0]
-    const b4 = layout.blocks[4]
-    expect(b0).toBeDefined()
-    expect(b4).toBeDefined()
-    expect(b0!.x).toBe(b4!.x)
-  })
-
-  it('should push subsequent columns right based on widest block in prior column', () => {
-    // Block 0 (col 0) is wide; block 1 (col 1) should start after col 0's width + gap
+  it('should place target blocks below source blocks in a chain', () => {
     const diagram: Diagram = {
       blocks: [
-        { id: 'Wide', label: 'A Very Very Long Block Label', type: 'component' },
-        { id: 'Short', label: 'X', type: 'component' },
+        { id: 'A', label: 'A', type: 'component' },
+        { id: 'B', label: 'B', type: 'component' },
+        { id: 'C', label: 'C', type: 'component' },
       ],
-      connections: [],
+      connections: [
+        { fromId: 'A', toId: 'B', arrowType: '-->' },
+        { fromId: 'B', toId: 'C', arrowType: '-->' },
+      ],
     }
 
     const layout = computeLayout(diagram)
-    const wide = layout.blocks.find((b) => b.id === 'Wide')
-    const short = layout.blocks.find((b) => b.id === 'Short')
-    expect(wide).toBeDefined()
-    expect(short).toBeDefined()
-    // The short block's x should be greater than the wide block's x + width
-    expect(short!.x).toBeGreaterThan(wide!.x + wide!.width)
+    const a = layout.blocks.find((b) => b.id === 'A')!
+    const b = layout.blocks.find((b) => b.id === 'B')!
+    const c = layout.blocks.find((b) => b.id === 'C')!
+
+    expect(a.y).toBeLessThan(b.y)
+    expect(b.y).toBeLessThan(c.y)
+  })
+
+  it('should place siblings side-by-side on the same row', () => {
+    const diagram: Diagram = {
+      blocks: [
+        { id: 'A', label: 'A', type: 'component' },
+        { id: 'B', label: 'B', type: 'component' },
+        { id: 'C', label: 'C', type: 'component' },
+      ],
+      connections: [
+        { fromId: 'A', toId: 'B', arrowType: '-->' },
+        { fromId: 'A', toId: 'C', arrowType: '-->' },
+      ],
+    }
+
+    const layout = computeLayout(diagram)
+    const b = layout.blocks.find((b) => b.id === 'B')!
+    const c = layout.blocks.find((b) => b.id === 'C')!
+
+    // B and C should be on the same row (same y)
+    expect(b.y).toBe(c.y)
+    // but different x
+    expect(b.x).not.toBe(c.x)
+  })
+
+  it('should place disconnected blocks on the top layer', () => {
+    const diagram: Diagram = {
+      blocks: [
+        { id: 'A', label: 'A', type: 'component' },
+        { id: 'B', label: 'B', type: 'component' },
+        { id: 'Lone', label: 'Lone', type: 'component' },
+      ],
+      connections: [{ fromId: 'A', toId: 'B', arrowType: '-->' }],
+    }
+
+    const layout = computeLayout(diagram)
+    const a = layout.blocks.find((b) => b.id === 'A')!
+    const lone = layout.blocks.find((b) => b.id === 'Lone')!
+
+    // Lone node should be at the same y-level as the root
+    expect(lone.y).toBe(a.y)
+  })
+
+  it('should handle diamond-shaped dependencies', () => {
+    // A -> B, A -> C, B -> D, C -> D
+    const diagram: Diagram = {
+      blocks: [
+        { id: 'A', label: 'A', type: 'component' },
+        { id: 'B', label: 'B', type: 'component' },
+        { id: 'C', label: 'C', type: 'component' },
+        { id: 'D', label: 'D', type: 'component' },
+      ],
+      connections: [
+        { fromId: 'A', toId: 'B', arrowType: '-->' },
+        { fromId: 'A', toId: 'C', arrowType: '-->' },
+        { fromId: 'B', toId: 'D', arrowType: '-->' },
+        { fromId: 'C', toId: 'D', arrowType: '-->' },
+      ],
+    }
+
+    const layout = computeLayout(diagram)
+    const a = layout.blocks.find((b) => b.id === 'A')!
+    const b = layout.blocks.find((b) => b.id === 'B')!
+    const c = layout.blocks.find((b) => b.id === 'C')!
+    const d = layout.blocks.find((b) => b.id === 'D')!
+
+    // A on top, B and C in the middle, D on the bottom
+    expect(a.y).toBeLessThan(b.y)
+    expect(b.y).toBe(c.y)
+    expect(b.y).toBeLessThan(d.y)
+  })
+
+  it('should reverse layout direction for <-- arrows', () => {
+    const diagram: Diagram = {
+      blocks: [
+        { id: 'A', label: 'A', type: 'component' },
+        { id: 'B', label: 'B', type: 'component' },
+      ],
+      connections: [{ fromId: 'A', toId: 'B', arrowType: '<--' }],
+    }
+
+    const layout = computeLayout(diagram)
+    const a = layout.blocks.find((b) => b.id === 'A')!
+    const b = layout.blocks.find((b) => b.id === 'B')!
+
+    // B is the actual source (arrow reversed), so B should be above A
+    expect(b.y).toBeLessThan(a.y)
+  })
+
+  it('should handle cyclic dependencies without hanging', () => {
+    const diagram: Diagram = {
+      blocks: [
+        { id: 'A', label: 'A', type: 'component' },
+        { id: 'B', label: 'B', type: 'component' },
+        { id: 'C', label: 'C', type: 'component' },
+      ],
+      connections: [
+        { fromId: 'A', toId: 'B', arrowType: '-->' },
+        { fromId: 'B', toId: 'C', arrowType: '-->' },
+        { fromId: 'C', toId: 'A', arrowType: '-->' },
+      ],
+    }
+
+    const layout = computeLayout(diagram)
+    expect(layout.blocks).toHaveLength(3)
+    // All blocks should have valid positive coordinates
+    for (const block of layout.blocks) {
+      expect(block.x).toBeGreaterThanOrEqual(0)
+      expect(block.y).toBeGreaterThanOrEqual(0)
+    }
+  })
+
+  it('should treat dashed forward arrows (..>) like --> for layout', () => {
+    const diagram: Diagram = {
+      blocks: [
+        { id: 'A', label: 'A', type: 'component' },
+        { id: 'B', label: 'B', type: 'component' },
+      ],
+      connections: [{ fromId: 'A', toId: 'B', arrowType: '..>' }],
+    }
+
+    const layout = computeLayout(diagram)
+    const a = layout.blocks.find((b) => b.id === 'A')!
+    const b = layout.blocks.find((b) => b.id === 'B')!
+
+    expect(a.y).toBeLessThan(b.y)
   })
 })
