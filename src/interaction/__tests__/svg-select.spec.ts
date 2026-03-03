@@ -9,186 +9,319 @@ vi.mock('mermaid', () => ({
 }))
 
 import {
-  toggleSelect,
+  toggleNodeSelect,
+  toggleContainerSelect,
   clearSelection,
-  applySelectionStyles,
+  allSelectedIds,
+  clearSelectionOverlays,
+  renderSelectionOverlays,
 } from '../svg-select'
 import type { SelectionState } from '../../core/types'
+import type { DiagramIndex, IndexedElement } from '../../core/index-diagram'
 
 // Helpers
 
-const empty: SelectionState = { selectedIds: new Set() }
+const SVG_NS = 'http://www.w3.org/2000/svg'
 
-function makeSelection(...ids: string[]): SelectionState {
-  return { selectedIds: new Set(ids) }
+const empty: SelectionState = { selectedNodeIds: new Set(), selectedContainerIds: new Set() }
+
+function makeSelection(nodeIds: string[] = [], containerIds: string[] = []): SelectionState {
+  return { selectedNodeIds: new Set(nodeIds), selectedContainerIds: new Set(containerIds) }
 }
 
-function makeSvgWithNodes(
-  nodeIds: string[],
-  selector: string = '.node',
-): SVGSVGElement {
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
-  for (const id of nodeIds) {
-    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g')
-    g.setAttribute('class', 'node')
-    g.setAttribute('data-id', id)
-    // Add a shape child for highlight testing
-    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
-    g.appendChild(rect)
-    svg.appendChild(g)
-  }
+function makeInteractionLayer(): SVGGElement {
+  const svg = document.createElementNS(SVG_NS, 'svg')
+  const g = document.createElementNS(SVG_NS, 'g')
+  g.setAttribute('class', 'interactionLayer')
+  svg.appendChild(g)
   document.body.appendChild(svg)
-  return svg
+  return g
+}
+
+function makeIndexedElement(id: string): IndexedElement {
+  const el = document.createElementNS(SVG_NS, 'g') as SVGGElement
+  el.setAttribute('data-id', id)
+  // jsdom doesn't compute getBBox, so we stub it
+  Object.defineProperty(el, 'getBBox', {
+    value: () => ({ x: 10, y: 20, width: 100, height: 50 }),
+    configurable: true,
+  })
+  return { id, el, bbox: { x: 10, y: 20, width: 100, height: 50 } }
+}
+
+function makeDiagramIndex(nodeIds: string[], containerIds: string[] = []): DiagramIndex {
+  const nodes = new Map<string, IndexedElement>()
+  for (const id of nodeIds) {
+    nodes.set(id, makeIndexedElement(id))
+  }
+  const containers = new Map<string, IndexedElement>()
+  for (const id of containerIds) {
+    containers.set(id, makeIndexedElement(id))
+  }
+  return { nodes, containers }
 }
 
 describe('svg-select', () => {
-  // ----- toggleSelect -----
+  // ----- toggleNodeSelect -----
 
-  describe('toggleSelect', () => {
+  describe('toggleNodeSelect', () => {
     // Happy Path – single select mode (multi = false)
     it('selects a node when nothing is selected', () => {
-      const result = toggleSelect(empty, 'A', false)
-      expect(result.selectedIds.has('A')).toBe(true)
-      expect(result.selectedIds.size).toBe(1)
+      const result = toggleNodeSelect(empty, 'A', false)
+      expect(result.selectedNodeIds.has('A')).toBe(true)
+      expect(result.selectedNodeIds.size).toBe(1)
     })
 
     it('replaces selection with new node in single mode', () => {
-      const state = makeSelection('A')
-      const result = toggleSelect(state, 'B', false)
-      expect(result.selectedIds.has('B')).toBe(true)
-      expect(result.selectedIds.has('A')).toBe(false)
-      expect(result.selectedIds.size).toBe(1)
+      const state = makeSelection(['A'])
+      const result = toggleNodeSelect(state, 'B', false)
+      expect(result.selectedNodeIds.has('B')).toBe(true)
+      expect(result.selectedNodeIds.has('A')).toBe(false)
+      expect(result.selectedNodeIds.size).toBe(1)
     })
 
     it('deselects the only selected node when clicked again in single mode', () => {
-      const state = makeSelection('A')
-      const result = toggleSelect(state, 'A', false)
-      expect(result.selectedIds.size).toBe(0)
+      const state = makeSelection(['A'])
+      const result = toggleNodeSelect(state, 'A', false)
+      expect(result.selectedNodeIds.size).toBe(0)
     })
 
     // Happy Path – multi select mode (multi = true)
     it('adds a node to selection in multi mode', () => {
-      const state = makeSelection('A')
-      const result = toggleSelect(state, 'B', true)
-      expect(result.selectedIds.has('A')).toBe(true)
-      expect(result.selectedIds.has('B')).toBe(true)
-      expect(result.selectedIds.size).toBe(2)
+      const state = makeSelection(['A'])
+      const result = toggleNodeSelect(state, 'B', true)
+      expect(result.selectedNodeIds.has('A')).toBe(true)
+      expect(result.selectedNodeIds.has('B')).toBe(true)
+      expect(result.selectedNodeIds.size).toBe(2)
     })
 
     it('removes a node from selection in multi mode if already selected', () => {
-      const state = makeSelection('A', 'B')
-      const result = toggleSelect(state, 'A', true)
-      expect(result.selectedIds.has('A')).toBe(false)
-      expect(result.selectedIds.has('B')).toBe(true)
-      expect(result.selectedIds.size).toBe(1)
+      const state = makeSelection(['A', 'B'])
+      const result = toggleNodeSelect(state, 'A', true)
+      expect(result.selectedNodeIds.has('A')).toBe(false)
+      expect(result.selectedNodeIds.has('B')).toBe(true)
+      expect(result.selectedNodeIds.size).toBe(1)
     })
 
     // Edge Cases
     it('does not mutate the original state', () => {
-      const state = makeSelection('A')
-      const originalIds = new Set(state.selectedIds)
-      toggleSelect(state, 'B', true)
-      expect(state.selectedIds).toEqual(originalIds)
+      const state = makeSelection(['A'])
+      const originalIds = new Set(state.selectedNodeIds)
+      toggleNodeSelect(state, 'B', true)
+      expect(state.selectedNodeIds).toEqual(originalIds)
     })
 
     it('single-mode with multiple already selected replaces all', () => {
-      const state = makeSelection('A', 'B', 'C')
-      const result = toggleSelect(state, 'D', false)
-      expect(result.selectedIds.size).toBe(1)
-      expect(result.selectedIds.has('D')).toBe(true)
+      const state = makeSelection(['A', 'B', 'C'])
+      const result = toggleNodeSelect(state, 'D', false)
+      expect(result.selectedNodeIds.size).toBe(1)
+      expect(result.selectedNodeIds.has('D')).toBe(true)
+    })
+
+    it('single-mode clears container selection', () => {
+      const state = makeSelection(['A'], ['container1'])
+      const result = toggleNodeSelect(state, 'B', false)
+      expect(result.selectedContainerIds.size).toBe(0)
+      expect(result.selectedNodeIds.has('B')).toBe(true)
+    })
+
+    it('multi-mode preserves container selection', () => {
+      const state = makeSelection(['A'], ['container1'])
+      const result = toggleNodeSelect(state, 'B', true)
+      expect(result.selectedContainerIds.has('container1')).toBe(true)
+      expect(result.selectedNodeIds.has('A')).toBe(true)
+      expect(result.selectedNodeIds.has('B')).toBe(true)
+    })
+  })
+
+  // ----- toggleContainerSelect -----
+
+  describe('toggleContainerSelect', () => {
+    it('selects a container when nothing is selected', () => {
+      const result = toggleContainerSelect(empty, 'C1', false)
+      expect(result.selectedContainerIds.has('C1')).toBe(true)
+      expect(result.selectedContainerIds.size).toBe(1)
+    })
+
+    it('replaces selection with new container in single mode', () => {
+      const state = makeSelection([], ['C1'])
+      const result = toggleContainerSelect(state, 'C2', false)
+      expect(result.selectedContainerIds.has('C2')).toBe(true)
+      expect(result.selectedContainerIds.has('C1')).toBe(false)
+    })
+
+    it('deselects the only selected container when clicked again in single mode', () => {
+      const state = makeSelection([], ['C1'])
+      const result = toggleContainerSelect(state, 'C1', false)
+      expect(result.selectedContainerIds.size).toBe(0)
+    })
+
+    it('adds container in multi mode', () => {
+      const state = makeSelection([], ['C1'])
+      const result = toggleContainerSelect(state, 'C2', true)
+      expect(result.selectedContainerIds.has('C1')).toBe(true)
+      expect(result.selectedContainerIds.has('C2')).toBe(true)
+    })
+
+    it('removes container in multi mode if already selected', () => {
+      const state = makeSelection([], ['C1', 'C2'])
+      const result = toggleContainerSelect(state, 'C1', true)
+      expect(result.selectedContainerIds.has('C1')).toBe(false)
+      expect(result.selectedContainerIds.has('C2')).toBe(true)
+    })
+
+    it('single-mode clears node selection', () => {
+      const state = makeSelection(['A'], ['C1'])
+      const result = toggleContainerSelect(state, 'C2', false)
+      expect(result.selectedNodeIds.size).toBe(0)
+      expect(result.selectedContainerIds.has('C2')).toBe(true)
+    })
+
+    it('multi-mode preserves node selection', () => {
+      const state = makeSelection(['A'], ['C1'])
+      const result = toggleContainerSelect(state, 'C2', true)
+      expect(result.selectedNodeIds.has('A')).toBe(true)
+      expect(result.selectedContainerIds.has('C1')).toBe(true)
+      expect(result.selectedContainerIds.has('C2')).toBe(true)
     })
   })
 
   // ----- clearSelection -----
 
   describe('clearSelection', () => {
-    it('returns an empty selection', () => {
+    it('returns an empty selection with both Sets empty', () => {
       const result = clearSelection()
-      expect(result.selectedIds.size).toBe(0)
+      expect(result.selectedNodeIds.size).toBe(0)
+      expect(result.selectedContainerIds.size).toBe(0)
     })
 
-    it('returns a new Set instance each time', () => {
+    it('returns new Set instances each time', () => {
       const a = clearSelection()
       const b = clearSelection()
-      expect(a.selectedIds).not.toBe(b.selectedIds)
+      expect(a.selectedNodeIds).not.toBe(b.selectedNodeIds)
+      expect(a.selectedContainerIds).not.toBe(b.selectedContainerIds)
     })
   })
 
-  // ----- applySelectionStyles -----
+  // ----- allSelectedIds -----
 
-  describe('applySelectionStyles', () => {
-    it('adds selected class to selected nodes', () => {
-      const svg = makeSvgWithNodes(['A', 'B', 'C'])
-      applySelectionStyles(svg, makeSelection('A', 'C'), '.node')
-
-      const nodes = svg.querySelectorAll('.node')
-      const nodeA = nodes[0]!
-      const nodeB = nodes[1]!
-      const nodeC = nodes[2]!
-
-      expect(nodeA.classList.contains('fleximaid-selected')).toBe(true)
-      expect(nodeB.classList.contains('fleximaid-selected')).toBe(false)
-      expect(nodeC.classList.contains('fleximaid-selected')).toBe(true)
-
-      svg.remove()
+  describe('allSelectedIds', () => {
+    it('returns empty set when nothing is selected', () => {
+      expect(allSelectedIds(empty).size).toBe(0)
     })
 
-    it('removes selected class from deselected nodes', () => {
-      const svg = makeSvgWithNodes(['A', 'B'])
-
-      // First, select A
-      applySelectionStyles(svg, makeSelection('A'), '.node')
-      const nodeA = svg.querySelectorAll('.node')[0]!
-      expect(nodeA.classList.contains('fleximaid-selected')).toBe(true)
-
-      // Then, deselect all
-      applySelectionStyles(svg, makeSelection(), '.node')
-      expect(nodeA.classList.contains('fleximaid-selected')).toBe(false)
-
-      svg.remove()
+    it('returns combined node and container ids', () => {
+      const state = makeSelection(['A', 'B'], ['C1'])
+      const all = allSelectedIds(state)
+      expect(all.size).toBe(3)
+      expect(all.has('A')).toBe(true)
+      expect(all.has('B')).toBe(true)
+      expect(all.has('C1')).toBe(true)
     })
 
-    it('sets stroke on selected node shapes', () => {
-      const svg = makeSvgWithNodes(['A'])
-      applySelectionStyles(svg, makeSelection('A'), '.node')
+    it('returns only node ids when no containers are selected', () => {
+      const state = makeSelection(['A'])
+      const all = allSelectedIds(state)
+      expect(all.size).toBe(1)
+      expect(all.has('A')).toBe(true)
+    })
+  })
 
-      const rect = svg.querySelector('rect')!
-      expect(rect.getAttribute('stroke')).toBe('#3b82f6')
-      expect(rect.getAttribute('stroke-width')).toBe('3')
+  // ----- renderSelectionOverlays -----
 
-      svg.remove()
+  describe('renderSelectionOverlays', () => {
+    it('draws overlay rects for selected nodes', () => {
+      const layer = makeInteractionLayer()
+      const index = makeDiagramIndex(['A', 'B'])
+      const selection = makeSelection(['A'])
+
+      renderSelectionOverlays(layer, index, selection)
+
+      const overlays = layer.querySelectorAll('[data-selection-overlay]')
+      expect(overlays.length).toBe(1)
+      layer.closest('svg')?.remove()
     })
 
-    it('restores original stroke on deselection', () => {
-      const svg = makeSvgWithNodes(['A'])
-      const rect = svg.querySelector('rect')!
-      rect.setAttribute('stroke', 'red')
-      rect.setAttribute('stroke-width', '1')
+    it('draws overlay rects for selected containers', () => {
+      const layer = makeInteractionLayer()
+      const index = makeDiagramIndex([], ['C1', 'C2'])
+      const selection = makeSelection([], ['C1', 'C2'])
 
-      // Select
-      applySelectionStyles(svg, makeSelection('A'), '.node')
-      expect(rect.getAttribute('stroke')).toBe('#3b82f6')
+      renderSelectionOverlays(layer, index, selection)
 
-      // Deselect
-      applySelectionStyles(svg, makeSelection(), '.node')
-      expect(rect.getAttribute('stroke')).toBe('red')
-      expect(rect.getAttribute('stroke-width')).toBe('1')
-
-      svg.remove()
+      const overlays = layer.querySelectorAll('[data-selection-overlay]')
+      expect(overlays.length).toBe(2)
+      layer.closest('svg')?.remove()
     })
 
-    it('removes stroke attributes if original had none', () => {
-      const svg = makeSvgWithNodes(['A'])
+    it('draws combined overlays for nodes and containers', () => {
+      const layer = makeInteractionLayer()
+      const index = makeDiagramIndex(['A'], ['C1'])
+      const selection = makeSelection(['A'], ['C1'])
 
-      // Select then deselect
-      applySelectionStyles(svg, makeSelection('A'), '.node')
-      applySelectionStyles(svg, makeSelection(), '.node')
+      renderSelectionOverlays(layer, index, selection)
 
-      const rect = svg.querySelector('rect')!
-      expect(rect.getAttribute('stroke')).toBeNull()
-      expect(rect.getAttribute('stroke-width')).toBeNull()
+      const overlays = layer.querySelectorAll('[data-selection-overlay]')
+      expect(overlays.length).toBe(2)
+      layer.closest('svg')?.remove()
+    })
 
-      svg.remove()
+    it('clears previous overlays before drawing new ones', () => {
+      const layer = makeInteractionLayer()
+      const index = makeDiagramIndex(['A', 'B'])
+
+      renderSelectionOverlays(layer, index, makeSelection(['A', 'B']))
+      expect(layer.querySelectorAll('[data-selection-overlay]').length).toBe(2)
+
+      renderSelectionOverlays(layer, index, makeSelection(['A']))
+      expect(layer.querySelectorAll('[data-selection-overlay]').length).toBe(1)
+      layer.closest('svg')?.remove()
+    })
+
+    it('draws nothing when selection is empty', () => {
+      const layer = makeInteractionLayer()
+      const index = makeDiagramIndex(['A', 'B'])
+
+      renderSelectionOverlays(layer, index, empty)
+
+      const overlays = layer.querySelectorAll('[data-selection-overlay]')
+      expect(overlays.length).toBe(0)
+      layer.closest('svg')?.remove()
+    })
+
+    it('skips nodes not found in diagram index', () => {
+      const layer = makeInteractionLayer()
+      const index = makeDiagramIndex(['A'])
+      const selection = makeSelection(['A', 'MISSING'])
+
+      renderSelectionOverlays(layer, index, selection)
+
+      const overlays = layer.querySelectorAll('[data-selection-overlay]')
+      expect(overlays.length).toBe(1)
+      layer.closest('svg')?.remove()
+    })
+  })
+
+  // ----- clearSelectionOverlays -----
+
+  describe('clearSelectionOverlays', () => {
+    it('removes all overlay rects', () => {
+      const layer = makeInteractionLayer()
+      const index = makeDiagramIndex(['A', 'B'])
+
+      renderSelectionOverlays(layer, index, makeSelection(['A', 'B']))
+      expect(layer.querySelectorAll('[data-selection-overlay]').length).toBe(2)
+
+      clearSelectionOverlays(layer)
+      expect(layer.querySelectorAll('[data-selection-overlay]').length).toBe(0)
+      layer.closest('svg')?.remove()
+    })
+
+    it('does nothing when no overlays exist', () => {
+      const layer = makeInteractionLayer()
+      clearSelectionOverlays(layer)
+      expect(layer.querySelectorAll('[data-selection-overlay]').length).toBe(0)
+      layer.closest('svg')?.remove()
     })
   })
 })

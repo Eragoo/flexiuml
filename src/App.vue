@@ -1,13 +1,53 @@
 <script setup lang="ts">
-import { ref, watch, nextTick, onMounted } from 'vue'
-import { renderMermaidSvg, NODE_SELECTOR, extractNodeId } from './core/mermaid-config'
-import type { DragState, ViewportState, PanState, SelectionState } from './core/types'
-import { IDLE_DRAG, DEFAULT_VIEWPORT, IDLE_PAN } from './core/types'
-import { findNodeGroup, startDrag, moveDrag, endDrag, getTranslate } from './interaction/svg-drag'
-import { applyViewport, startPan, movePan, endPan, zoomAtPoint, fitToView } from './interaction/svg-pan-zoom'
-import { toggleSelect, clearSelection, applySelectionStyles } from './interaction/svg-select'
+import { ref, watch, nextTick, onMounted, onUnmounted } from 'vue'
+import { renderMermaidSvg, NODE_SELECTOR, CONTAINER_SELECTOR, extractNodeId } from './core/mermaid-config'
+import type { DragState, ViewportState, PanState, SelectionState, BoxSelectState } from './core/types'
+import { IDLE_DRAG, DEFAULT_VIEWPORT, IDLE_PAN, IDLE_BOX_SELECT } from './core/types'
+import type { LayoutMap } from './core/layout-map'
+import { createEmptyLayout, computeMermaidHash } from './core/layout-map'
+import type { SvgStructure } from './core/svg-structure'
+import { restructureSvgDom, clearInteractionLayer } from './core/svg-structure'
+import type { DiagramIndex } from './core/index-diagram'
+import { indexDiagramElements } from './core/index-diagram'
+import {
+  findNodeGroup,
+  beginDrag,
+  updateDrag,
+  endDrag,
+  getTranslate,
+  applyLayoutToDOM,
+  seedLayoutFromDOM,
+} from './interaction/svg-drag'
+import {
+  applyPanZoom,
+  startPan,
+  movePan,
+  endPan,
+  zoomAtPoint,
+  fitToView,
+  screenToWorld,
+} from './interaction/svg-pan-zoom'
+import {
+  toggleNodeSelect,
+  toggleContainerSelect,
+  clearSelection,
+  allSelectedIds,
+  renderSelectionOverlays,
+  clearSelectionOverlays,
+  startBoxSelect,
+  updateBoxSelect,
+  renderBoxSelectRect,
+  clearBoxSelectRect,
+  endBoxSelect,
+  resetBoxSelect,
+  mergeSelections,
+} from './interaction/svg-select'
 import { buildEdgeMap, collectNodeIds, updateEdgesForNode } from './interaction/svg-edges'
 import type { EdgeMap } from './interaction/svg-edges'
+import { exportLayout, importLayout, resetLayout, saveToLocalStorage, loadFromLocalStorage } from './interaction/persistence'
+import { hitTestContainer, reparentNode } from './interaction/reparent'
+import { computeContainerFit, updateResize } from './interaction/svg-containers'
+import type { ResizeState } from './interaction/svg-containers'
 
 const SAMPLE = `graph TD
   A[Web App] --> B[API Gateway]
@@ -22,21 +62,56 @@ const errorMessage = ref<string | null>(null)
 let renderCounter = 0
 let renderDebounceTimer: ReturnType<typeof setTimeout> | undefined
 
-// Interaction state
+// ── Core state ──────────────────────────────────────────────────────────────
+
+let structure: SvgStructure | null = null
+let diagramIndex: DiagramIndex = { nodes: new Map(), containers: new Map() }
+let layoutMap: LayoutMap = createEmptyLayout()
+
+// ── Interaction state (non-reactive for 60fps performance) ──────────────────
+
 let dragState: DragState = { ...IDLE_DRAG }
 let viewport: ViewportState = { ...DEFAULT_VIEWPORT }
 let panState: PanState = { ...IDLE_PAN }
-let selectionState: SelectionState = { selectedIds: new Set() }
+let selectionState: SelectionState = { selectedNodeIds: new Set(), selectedContainerIds: new Set() }
+let boxSelectState: BoxSelectState = { ...IDLE_BOX_SELECT }
+// TODO: resizeState is handled in onPointerMove/onPointerUp but nothing sets it
+// to non-null. Add entry point (e.g. resize handles on containers) to activate.
+let resizeState: ResizeState | null = null
 
 // Track whether a drag actually moved (to distinguish click from drag)
 let dragMoved = false
+// Track which element was clicked (for deselect-others on click-up)
+let clickedId: string | null = null
+let clickedIsContainer = false
+// Track space key for pan mode
+let spaceHeld = false
 
-// Edge map: rebuilt after each render to track which edges connect to each node
+// Edge map: rebuilt after each render
 let edgeMap: EdgeMap = new Map()
 
-function getSvgElement(): SVGSVGElement | null {
-  return svgContainerRef.value?.querySelector('svg') ?? null
+// Persistence debounce
+let persistDebounceTimer: ReturnType<typeof setTimeout> | undefined
+
+// ── Helper accessors ────────────────────────────────────────────────────────
+
+function getSvg(): SVGSVGElement | null {
+  return structure?.svg ?? null
 }
+
+function getPanZoomLayer(): SVGGElement | null {
+  return structure?.panZoomLayer ?? null
+}
+
+function getInteractionLayer(): SVGGElement | null {
+  return structure?.interactionLayer ?? null
+}
+
+function getDiagramContent(): SVGGElement | null {
+  return structure?.diagramContent ?? null
+}
+
+// ── Render pipeline ─────────────────────────────────────────────────────────
 
 async function renderDiagram() {
   const container = svgContainerRef.value
@@ -50,151 +125,444 @@ async function renderDiagram() {
     errorMessage.value = null
     const svgMarkup = await renderMermaidSvg(mermaidInput.value, id)
 
-    // Discard stale render results (user typed while we were rendering)
+    // Discard stale render results
     if (thisRender !== renderCounter) return
 
     container.innerHTML = svgMarkup
 
-    const svg = getSvgElement()
-    if (svg) {
-      // Make SVG fill the container
-      svg.style.width = '100%'
-      svg.style.height = '100%'
-      svg.removeAttribute('height')
-      svg.setAttribute('preserveAspectRatio', 'xMidYMid meet')
+    // Restructure SVG into target DOM shape
+    structure = restructureSvgDom(container)
+    if (!structure) return
 
-      // Reset viewport and fit content
-      await nextTick()
-      viewport = fitToView(svg)
-      applyViewport(svg, viewport)
+    const { svg, panZoomLayer, diagramContent, interactionLayer } = structure
 
-      // Reset selection
-      selectionState = clearSelection()
+    // Make SVG fill the container
+    svg.style.width = '100%'
+    svg.style.height = '100%'
+    svg.removeAttribute('height')
+    // Remove viewBox — we use panZoomLayer transform for pan/zoom
+    svg.removeAttribute('viewBox')
 
-      // Make node groups interactive
-      setupNodeInteractivity(svg)
+    // Index diagram elements (nodes + containers)
+    diagramIndex = indexDiagramElements(diagramContent)
 
-      // Build edge map so dragging a node also moves its connected edges
-      const knownNodeIds = collectNodeIds(svg, NODE_SELECTOR, extractNodeId)
-      edgeMap = buildEdgeMap(svg, knownNodeIds)
+    // Seed layout from DOM positions (first render) or reapply existing layout
+    const hash = computeMermaidHash(mermaidInput.value)
+    if (layoutMap.mermaidHash === hash && Object.keys(layoutMap.nodes).length > 0) {
+      // Mermaid text unchanged — reapply stored positions
+      applyLayoutToDOM(layoutMap, diagramIndex)
+    } else {
+      // New/changed diagram — seed layout from Mermaid's default positions
+      layoutMap = seedLayoutFromDOM(layoutMap, diagramIndex)
+      layoutMap = { ...layoutMap, mermaidHash: hash }
     }
+
+    // Fit to view
+    await nextTick()
+    viewport = fitToView(svg, diagramContent)
+    applyPanZoom(panZoomLayer, viewport)
+
+    // Reset selection
+    selectionState = clearSelection()
+    clearInteractionLayer(interactionLayer)
+
+    // Build edge map for edge following
+    const knownNodeIds = collectNodeIds(svg, NODE_SELECTOR, extractNodeId)
+    edgeMap = buildEdgeMap(svg, knownNodeIds)
+
+    // Make node groups show grab cursor
+    setupNodeCursors()
   } catch (err) {
+    if (thisRender !== renderCounter) return
     errorMessage.value = err instanceof Error ? err.message : String(err)
     container.innerHTML = ''
+    structure = null
   }
 }
 
-/**
- * Add pointer cursor and data attributes to Mermaid node groups.
- */
-function setupNodeInteractivity(svg: SVGSVGElement): void {
-  const nodes = svg.querySelectorAll(NODE_SELECTOR)
-  for (const node of nodes) {
-    if (!(node instanceof SVGGElement)) continue
-    node.style.cursor = 'grab'
+function setupNodeCursors(): void {
+  const content = getDiagramContent()
+  if (!content) return
 
-    // Ensure each node has a data-id for easy lookup
-    const nodeId = extractNodeId(node)
-    if (nodeId && !node.getAttribute('data-id')) {
-      node.setAttribute('data-id', nodeId)
+  const nodes = content.querySelectorAll(NODE_SELECTOR)
+  for (const node of nodes) {
+    if (node instanceof SVGGElement) {
+      node.style.cursor = 'grab'
+    }
+  }
+
+  const containers = content.querySelectorAll(CONTAINER_SELECTOR)
+  for (const container of containers) {
+    if (container instanceof SVGGElement) {
+      container.style.cursor = 'grab'
     }
   }
 }
 
-// ── Mouse event handlers ────────────────────────────────────────────────────
+// ── Pointer event handlers ──────────────────────────────────────────────────
 
-function onMouseDown(e: MouseEvent) {
-  const svg = getSvgElement()
-  if (!svg) return
+function onPointerDown(e: PointerEvent) {
+  const svg = getSvg()
+  const panZoomLayer = getPanZoomLayer()
+  const interactionLayer = getInteractionLayer()
+  if (!svg || !panZoomLayer || !interactionLayer) return
 
-  const nodeGroup = findNodeGroup(e.target, NODE_SELECTOR)
-
-  if (nodeGroup) {
-    // Start dragging a node
-    const nodeId = extractNodeId(nodeGroup)
-    if (!nodeId) return
-
-    dragState = startDrag(svg, nodeGroup, nodeId, e.clientX, e.clientY)
-    dragMoved = false
-    nodeGroup.style.cursor = 'grabbing'
-    e.preventDefault()
-  } else {
-    // Start panning (click on empty SVG area)
+  // Space + click → pan
+  if (spaceHeld) {
     panState = startPan(e.clientX, e.clientY, viewport)
     svg.style.cursor = 'grabbing'
     e.preventDefault()
+    return
   }
-}
 
-function onMouseMove(e: MouseEvent) {
-  const svg = getSvgElement()
-  if (!svg) return
+  // Middle mouse → pan
+  if (e.button === 1) {
+    panState = startPan(e.clientX, e.clientY, viewport)
+    svg.style.cursor = 'grabbing'
+    e.preventDefault()
+    return
+  }
 
-  if (dragState.dragging && dragState.nodeId) {
-    const nodeEl = svg.querySelector(`[data-id="${CSS.escape(dragState.nodeId)}"]`)
-    if (nodeEl instanceof SVGGElement) {
-      moveDrag(svg, dragState, nodeEl, e.clientX, e.clientY)
-      dragMoved = true
+  // Only handle left button from here
+  if (e.button !== 0) return
 
-      // Update edges connected to the dragged node
-      updateEdgesForNode(svg, dragState.nodeId, edgeMap, getTranslate)
+  // Check if clicked on a container
+  const containerGroup = findNodeGroup(e.target, CONTAINER_SELECTOR)
+  // Check if clicked on a node (node check must come first for elements
+  // inside containers — we want to select the node, not the container)
+  const nodeGroup = findNodeGroup(e.target, NODE_SELECTOR)
+
+  if (nodeGroup) {
+    const nodeId = extractNodeId(nodeGroup)
+    if (!nodeId) return
+
+    const multi = e.shiftKey || e.metaKey || e.ctrlKey
+
+    // If this node is not selected, select it first
+    if (!selectionState.selectedNodeIds.has(nodeId)) {
+      selectionState = toggleNodeSelect(selectionState, nodeId, multi)
+      renderSelectionOverlays(interactionLayer, diagramIndex, selectionState)
     }
-  } else if (panState.panning) {
-    viewport = movePan(panState, e.clientX, e.clientY, viewport)
-    applyViewport(svg, viewport)
+
+    // Start dragging all selected elements
+    const allIds = allSelectedIds(selectionState)
+    dragState = beginDrag(svg, panZoomLayer, allIds, layoutMap, e.clientX, e.clientY)
+    dragMoved = false
+    clickedId = nodeId
+    clickedIsContainer = false
+    nodeGroup.style.cursor = 'grabbing'
+    e.preventDefault()
+  } else if (containerGroup && !nodeGroup) {
+    // Clicked directly on a container (not a node inside it)
+    const containerId = containerGroup.getAttribute('data-id') ?? containerGroup.id
+    if (!containerId) return
+
+    const multi = e.shiftKey || e.metaKey || e.ctrlKey
+
+    if (!selectionState.selectedContainerIds.has(containerId)) {
+      selectionState = toggleContainerSelect(selectionState, containerId, multi)
+      renderSelectionOverlays(interactionLayer, diagramIndex, selectionState)
+    }
+
+    const allIds = allSelectedIds(selectionState)
+    dragState = beginDrag(svg, panZoomLayer, allIds, layoutMap, e.clientX, e.clientY)
+    dragMoved = false
+    clickedId = containerId
+    clickedIsContainer = true
+    containerGroup.style.cursor = 'grabbing'
+    e.preventDefault()
+  } else {
+    // Clicked on empty area → start box select
+    const world = screenToWorld(svg, panZoomLayer, e.clientX, e.clientY)
+    boxSelectState = startBoxSelect(world.x, world.y)
+    e.preventDefault()
   }
 }
 
-function onMouseUp(e: MouseEvent) {
-  const svg = getSvgElement()
+function onPointerMove(e: PointerEvent) {
+  const svg = getSvg()
+  const panZoomLayer = getPanZoomLayer()
+  const interactionLayer = getInteractionLayer()
+  if (!svg || !panZoomLayer || !interactionLayer) return
 
-  if (dragState.dragging && dragState.nodeId) {
-    // If it was a click (no movement), treat as selection
-    if (!dragMoved) {
-      selectionState = toggleSelect(selectionState, dragState.nodeId, e.shiftKey || e.metaKey || e.ctrlKey)
-      if (svg) {
-        applySelectionStyles(svg, selectionState, NODE_SELECTOR)
+  if (panState.panning) {
+    viewport = movePan(panState, e.clientX, e.clientY, viewport)
+    applyPanZoom(panZoomLayer, viewport)
+  } else if (dragState.dragging) {
+    layoutMap = updateDrag(svg, panZoomLayer, dragState, diagramIndex, layoutMap, e.clientX, e.clientY)
+    dragMoved = true
+
+    // Update edges for all dragged nodes
+    for (const id of dragState.draggedIds) {
+      updateEdgesForNode(svg, id, edgeMap, getTranslate)
+    }
+
+    // Update selection overlays to follow dragged elements
+    renderSelectionOverlays(interactionLayer, diagramIndex, selectionState)
+  } else if (boxSelectState.active) {
+    const world = screenToWorld(svg, panZoomLayer, e.clientX, e.clientY)
+    boxSelectState = updateBoxSelect(boxSelectState, world.x, world.y)
+    renderBoxSelectRect(interactionLayer, boxSelectState)
+  } else if (resizeState) {
+    const world = screenToWorld(svg, panZoomLayer, e.clientX, e.clientY)
+    const result = updateResize(resizeState, layoutMap, world.x, world.y)
+    resizeState = result.state
+    layoutMap = result.layout
+    // Apply container geometry to DOM
+    const entry = diagramIndex.containers.get(resizeState.containerId)
+    if (entry) {
+      const containerLayout = layoutMap.containers[resizeState.containerId]
+      if (containerLayout) {
+        const rect = entry.el.querySelector('rect')
+        if (rect) {
+          rect.setAttribute('width', String(containerLayout.width))
+          rect.setAttribute('height', String(containerLayout.height))
+        }
+      }
+    }
+  }
+}
+
+function onPointerUp(e: PointerEvent) {
+  const svg = getSvg()
+  const panZoomLayer = getPanZoomLayer()
+  const interactionLayer = getInteractionLayer()
+
+  if (panState.panning) {
+    panState = endPan()
+    if (svg) svg.style.cursor = 'default'
+    return
+  }
+
+  if (resizeState) {
+    const containerId = resizeState.containerId
+    resizeState = null
+    // Update container in layout as manual mode
+    if (layoutMap.containers[containerId]) {
+      layoutMap = {
+        ...layoutMap,
+        containers: {
+          ...layoutMap.containers,
+          [containerId]: { ...layoutMap.containers[containerId]!, mode: 'manual' },
+        },
+      }
+    }
+    debouncedPersist()
+    return
+  }
+
+  if (dragState.dragging) {
+    if (!dragMoved && interactionLayer && clickedId) {
+      // Was a click, not a drag — if clicking an already-selected element
+      // without shift, narrow selection to just that element
+      const multi = e.shiftKey || e.metaKey || e.ctrlKey
+      if (!multi) {
+        if (clickedIsContainer) {
+          selectionState = toggleContainerSelect(selectionState, clickedId, false)
+        } else {
+          selectionState = toggleNodeSelect(selectionState, clickedId, false)
+        }
+        renderSelectionOverlays(interactionLayer, diagramIndex, selectionState)
       }
     }
 
-    // Restore cursor on the node
-    if (svg) {
-      const nodeEl = svg.querySelector(`[data-id="${CSS.escape(dragState.nodeId)}"]`)
-      if (nodeEl instanceof SVGGElement) {
-        nodeEl.style.cursor = 'grab'
+    if (dragMoved) {
+      // Run edge sync for all affected nodes
+      if (svg) {
+        for (const id of dragState.draggedIds) {
+          updateEdgesForNode(svg, id, edgeMap, getTranslate)
+        }
+      }
+
+      // Check reparenting for dragged nodes
+      if (svg && panZoomLayer) {
+        for (const id of dragState.draggedIds) {
+          if (diagramIndex.nodes.has(id)) {
+            const entry = diagramIndex.nodes.get(id)!
+            let bbox: { x: number; y: number; width: number; height: number }
+            try {
+              bbox = entry.el.getBBox()
+            } catch {
+              continue
+            }
+            const translate = getTranslate(entry.el)
+            const center = {
+              x: bbox.x + bbox.width / 2 + translate.x,
+              y: bbox.y + bbox.height / 2 + translate.y,
+            }
+            const containerId = hitTestContainer(center, layoutMap, diagramIndex)
+            layoutMap = reparentNode(id, containerId, layoutMap)
+          }
+        }
+      }
+
+      // Update fit-mode containers
+      for (const [containerId, containerLayout] of Object.entries(layoutMap.containers)) {
+        if (containerLayout.mode === 'fit') {
+          const fit = computeContainerFit(containerId, layoutMap, diagramIndex)
+          if (fit) {
+            layoutMap = {
+              ...layoutMap,
+              containers: {
+                ...layoutMap.containers,
+                [containerId]: { ...containerLayout, ...fit },
+              },
+            }
+          }
+        }
+      }
+
+      debouncedPersist()
+    }
+
+    // Restore cursors on dragged elements
+    for (const id of dragState.draggedIds) {
+      const entry = diagramIndex.nodes.get(id) ?? diagramIndex.containers.get(id)
+      if (entry) {
+        entry.el.style.cursor = 'grab'
       }
     }
 
     dragState = endDrag()
     dragMoved = false
-  } else if (panState.panning) {
-    panState = endPan()
-    if (svg) {
-      svg.style.cursor = 'default'
+    clickedId = null
+    return
+  }
+
+  if (boxSelectState.active && interactionLayer) {
+    const boxResult = endBoxSelect(boxSelectState, diagramIndex)
+    const multi = e.shiftKey || e.metaKey || e.ctrlKey
+
+    if (multi) {
+      selectionState = mergeSelections(selectionState, boxResult)
+    } else {
+      selectionState = boxResult
     }
-  } else {
-    // Click on empty area without panning -> clear selection
-    if (svg && !(e.target instanceof Element && e.target.closest(NODE_SELECTOR))) {
+
+    clearBoxSelectRect(interactionLayer)
+    renderSelectionOverlays(interactionLayer, diagramIndex, selectionState)
+    boxSelectState = resetBoxSelect()
+    return
+  }
+
+  // Click on empty area → clear selection
+  if (svg && interactionLayer) {
+    if (!(e.target instanceof Element && (e.target.closest(NODE_SELECTOR) || e.target.closest(CONTAINER_SELECTOR)))) {
       selectionState = clearSelection()
-      applySelectionStyles(svg, selectionState, NODE_SELECTOR)
+      clearSelectionOverlays(interactionLayer)
     }
   }
 }
 
 function onWheel(e: WheelEvent) {
-  const svg = getSvgElement()
-  if (!svg) return
+  const svg = getSvg()
+  const panZoomLayer = getPanZoomLayer()
+  if (!svg || !panZoomLayer) return
 
   viewport = zoomAtPoint(viewport, svg, e.clientX, e.clientY, e.deltaY)
-  applyViewport(svg, viewport)
+  applyPanZoom(panZoomLayer, viewport)
 }
 
 function onFitToView() {
-  const svg = getSvgElement()
-  if (!svg) return
+  const svg = getSvg()
+  const panZoomLayer = getPanZoomLayer()
+  const diagramContent = getDiagramContent()
+  if (!svg || !panZoomLayer || !diagramContent) return
 
-  viewport = fitToView(svg)
-  applyViewport(svg, viewport)
+  viewport = fitToView(svg, diagramContent)
+  applyPanZoom(panZoomLayer, viewport)
+}
+
+// ── Keyboard handlers ───────────────────────────────────────────────────────
+
+function onKeyDown(e: KeyboardEvent) {
+  // Don't intercept keys when user is typing in an input/textarea
+  const tag = (e.target as HTMLElement)?.tagName
+  if (tag === 'TEXTAREA' || tag === 'INPUT') return
+
+  if (e.key === ' ' || e.code === 'Space') {
+    spaceHeld = true
+    const svg = getSvg()
+    if (svg) svg.style.cursor = 'grab'
+    e.preventDefault()
+  }
+  if (e.key === 'Escape') {
+    const interactionLayer = getInteractionLayer()
+    selectionState = clearSelection()
+    if (interactionLayer) {
+      clearSelectionOverlays(interactionLayer)
+    }
+    // Cancel any active box select
+    if (boxSelectState.active && interactionLayer) {
+      clearBoxSelectRect(interactionLayer)
+      boxSelectState = resetBoxSelect()
+    }
+  }
+}
+
+function onKeyUp(e: KeyboardEvent) {
+  const tag = (e.target as HTMLElement)?.tagName
+  if (tag === 'TEXTAREA' || tag === 'INPUT') return
+
+  if (e.key === ' ' || e.code === 'Space') {
+    spaceHeld = false
+    const svg = getSvg()
+    if (svg) svg.style.cursor = 'default'
+  }
+}
+
+// ── Persistence ─────────────────────────────────────────────────────────────
+
+function debouncedPersist() {
+  clearTimeout(persistDebounceTimer)
+  persistDebounceTimer = setTimeout(() => {
+    saveToLocalStorage(layoutMap)
+  }, 500)
+}
+
+function onExportLayout() {
+  exportLayout(layoutMap)
+}
+
+async function onImportLayout(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+
+  try {
+    layoutMap = await importLayout(file)
+    // Reapply to DOM
+    applyLayoutToDOM(layoutMap, diagramIndex)
+
+    // Rebuild edge map and sync edges
+    const svg = getSvg()
+    if (svg) {
+      const knownNodeIds = collectNodeIds(svg, NODE_SELECTOR, extractNodeId)
+      edgeMap = buildEdgeMap(svg, knownNodeIds)
+      for (const id of diagramIndex.nodes.keys()) {
+        updateEdgesForNode(svg, id, edgeMap, getTranslate)
+      }
+    }
+
+    // Update selection
+    const interactionLayer = getInteractionLayer()
+    if (interactionLayer) {
+      selectionState = clearSelection()
+      clearSelectionOverlays(interactionLayer)
+    }
+  } catch (err) {
+    errorMessage.value = `Failed to import layout: ${err instanceof Error ? err.message : String(err)}`
+  }
+
+  // Reset file input so same file can be re-selected
+  input.value = ''
+}
+
+function onResetLayout() {
+  layoutMap = resetLayout()
+
+  // Re-render to get Mermaid default positions
+  renderDiagram()
 }
 
 // ── Lifecycle ───────────────────────────────────────────────────────────────
@@ -205,7 +573,23 @@ watch(mermaidInput, () => {
 })
 
 onMounted(() => {
+  // Try loading layout from localStorage
+  const saved = loadFromLocalStorage()
+  if (saved) {
+    layoutMap = saved
+  }
+
+  document.addEventListener('keydown', onKeyDown)
+  document.addEventListener('keyup', onKeyUp)
+
   nextTick(() => renderDiagram())
+})
+
+onUnmounted(() => {
+  document.removeEventListener('keydown', onKeyDown)
+  document.removeEventListener('keyup', onKeyUp)
+  clearTimeout(renderDebounceTimer)
+  clearTimeout(persistDebounceTimer)
 })
 </script>
 
@@ -214,7 +598,15 @@ onMounted(() => {
     <header class="app-header">
       <h1>FlexiMaid</h1>
       <span class="subtitle">Paste Mermaid &middot; Drag nodes to rearrange</span>
-      <button class="fit-btn" @click="onFitToView" title="Fit to view">Fit</button>
+      <div class="header-actions">
+        <button class="header-btn" @click="onFitToView" title="Fit to view">Fit</button>
+        <button class="header-btn" @click="onExportLayout" title="Save layout to file">Save</button>
+        <label class="header-btn import-btn" title="Load layout from file">
+          Load
+          <input type="file" accept=".json" @change="onImportLayout" hidden />
+        </label>
+        <button class="header-btn" @click="onResetLayout" title="Reset layout to default">Reset</button>
+      </div>
     </header>
 
     <div class="main-layout">
@@ -237,11 +629,11 @@ onMounted(() => {
         </div>
         <div
           ref="svgContainerRef"
-          class="svg-container"
-          @mousedown="onMouseDown"
-          @mousemove="onMouseMove"
-          @mouseup="onMouseUp"
-          @mouseleave="onMouseUp"
+          class="svg-container diagram-root"
+          @pointerdown="onPointerDown"
+          @pointermove="onPointerMove"
+          @pointerup="onPointerUp"
+          @pointerleave="onPointerUp"
           @wheel.prevent="onWheel"
         />
       </section>
@@ -265,16 +657,6 @@ body,
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
   background: #0f172a;
   color: #e2e8f0;
-}
-
-/* Selection highlight style (injected globally so Mermaid SVG can use it) */
-.fleximaid-selected > rect,
-.fleximaid-selected > circle,
-.fleximaid-selected > polygon,
-.fleximaid-selected > ellipse,
-.fleximaid-selected > path {
-  stroke: #3b82f6 !important;
-  stroke-width: 3 !important;
 }
 </style>
 
@@ -305,8 +687,13 @@ body,
   color: #94a3b8;
 }
 
-.fit-btn {
+.header-actions {
   margin-left: auto;
+  display: flex;
+  gap: 0.5rem;
+}
+
+.header-btn {
   padding: 0.25rem 0.75rem;
   font-size: 0.75rem;
   background: #334155;
@@ -317,8 +704,13 @@ body,
   transition: background 0.15s;
 }
 
-.fit-btn:hover {
+.header-btn:hover {
   background: #475569;
+}
+
+.import-btn {
+  display: inline-flex;
+  align-items: center;
 }
 
 .main-layout {

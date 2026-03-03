@@ -72,6 +72,13 @@ export async function renderMermaidSvg(
 export const NODE_SELECTOR = '.node, .node-group, [class*="person"], [class*="container"], [class*="component"], [class*="system"]'
 
 /**
+ * CSS selectors for finding container/boundary groups in Mermaid-generated SVG.
+ * Flowchart subgraphs: Mermaid wraps them in <g> with class "cluster".
+ * C4 boundaries: classes like "boundary" or elements with role attributes.
+ */
+export const CONTAINER_SELECTOR = '.cluster, [class*="boundary"]'
+
+/**
  * Extract the node ID from a Mermaid SVG node group element.
  * Mermaid sets `id` attribute on node groups (e.g., "flowchart-A-0").
  * Returns the logical node ID or the element's id attribute.
@@ -89,4 +96,33 @@ export function extractNodeId(el: SVGElement): string | null {
   if (flowMatch) return flowMatch[1]!
 
   return id
+}
+
+/**
+ * Extract a container ID from a Mermaid SVG container group element.
+ *
+ * Flowchart subgraph containers typically have id attributes on their <g> group
+ * or on nested elements. C4 boundaries may use data-id attributes.
+ *
+ * Deterministic fallback strategy (when no stable ID is available):
+ *   1. Use data-id attribute if present
+ *   2. Use id attribute if present (strip common Mermaid prefixes)
+ *   3. Use the text content of the container's title/label as a hash key
+ *   Never relies on DOM order — uses content-based hashing.
+ */
+export function extractContainerId(el: SVGElement): string | null {
+  const dataId = el.getAttribute('data-id')
+  if (dataId) return dataId
+
+  const id = el.id
+  if (id) return id
+
+  // Fallback: use the text content of the first text/title element as a
+  // deterministic key. This handles cases where Mermaid doesn't set an id.
+  const textEl = el.querySelector('text, title')
+  if (textEl?.textContent) {
+    return `container-${textEl.textContent.trim().replace(/\s+/g, '_')}`
+  }
+
+  return null
 }

@@ -5,8 +5,10 @@ import {
   endPan,
   resetViewport,
   zoomAtPoint,
-  applyViewport,
+  applyPanZoom,
   fitToView,
+  screenToWorld,
+  worldToScreen,
 } from '../svg-pan-zoom'
 import { IDLE_PAN, DEFAULT_VIEWPORT } from '../../core/types'
 import type { ViewportState, PanState } from '../../core/types'
@@ -15,19 +17,23 @@ import type { ViewportState, PanState } from '../../core/types'
 
 function makeSvg(width = 800, height = 600): SVGSVGElement {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
-  // jsdom doesn't compute layout, so we stub clientWidth/clientHeight
   Object.defineProperty(svg, 'clientWidth', { value: width, configurable: true })
   Object.defineProperty(svg, 'clientHeight', { value: height, configurable: true })
   Object.defineProperty(svg, 'getBoundingClientRect', {
     value: () => ({ left: 0, top: 0, width, height, right: width, bottom: height, x: 0, y: 0, toJSON() {} }),
     configurable: true,
   })
-  Object.defineProperty(svg, 'getBBox', {
-    value: () => ({ x: 0, y: 0, width: 400, height: 300 }),
-    configurable: true,
-  })
   document.body.appendChild(svg)
   return svg
+}
+
+function makeGElement(bboxWidth = 400, bboxHeight = 300): SVGGElement {
+  const g = document.createElementNS('http://www.w3.org/2000/svg', 'g')
+  Object.defineProperty(g, 'getBBox', {
+    value: () => ({ x: 0, y: 0, width: bboxWidth, height: bboxHeight }),
+    configurable: true,
+  })
+  return g
 }
 
 const viewport: ViewportState = { panX: 0, panY: 0, zoom: 1 }
@@ -58,7 +64,7 @@ describe('svg-pan-zoom', () => {
   // ----- movePan -----
 
   describe('movePan', () => {
-    it('updates panX and panY based on mouse delta and zoom', () => {
+    it('updates panX and panY based on mouse delta (transform-based)', () => {
       const pan: PanState = {
         panning: true,
         startClientX: 100,
@@ -66,13 +72,13 @@ describe('svg-pan-zoom', () => {
         startPanX: 0,
         startPanY: 0,
       }
-      // Move mouse right 50px, down 30px → pan should decrease (move view left/up)
+      // Move mouse right 50px, down 30px → pan increases (direct screen translation)
       const result = movePan(pan, 150, 230, { panX: 0, panY: 0, zoom: 1 })
-      expect(result.panX).toBe(-50)
-      expect(result.panY).toBe(-30)
+      expect(result.panX).toBe(50)
+      expect(result.panY).toBe(30)
     })
 
-    it('scales delta by zoom level', () => {
+    it('pan delta is independent of zoom in transform mode', () => {
       const pan: PanState = {
         panning: true,
         startClientX: 0,
@@ -80,10 +86,10 @@ describe('svg-pan-zoom', () => {
         startPanX: 0,
         startPanY: 0,
       }
-      // Zoom = 2 → mouse movement has half the effect on pan
+      // In transform-based pan, mouse dx/dy maps directly to panX/panY
       const result = movePan(pan, 100, 100, { panX: 0, panY: 0, zoom: 2 })
-      expect(result.panX).toBe(-50)
-      expect(result.panY).toBe(-50)
+      expect(result.panX).toBe(100)
+      expect(result.panY).toBe(100)
     })
 
     it('returns unchanged viewport when not panning', () => {
@@ -119,28 +125,25 @@ describe('svg-pan-zoom', () => {
     })
   })
 
-  // ----- applyViewport -----
+  // ----- applyPanZoom -----
 
-  describe('applyViewport', () => {
-    it('sets viewBox on the SVG element', () => {
-      const svg = makeSvg(800, 600)
-      applyViewport(svg, { panX: 10, panY: 20, zoom: 1 })
-      expect(svg.getAttribute('viewBox')).toBe('10 20 800 600')
-      svg.remove()
+  describe('applyPanZoom', () => {
+    it('sets transform attribute on panZoomLayer', () => {
+      const g = document.createElementNS('http://www.w3.org/2000/svg', 'g') as SVGGElement
+      applyPanZoom(g, { panX: 10, panY: 20, zoom: 1 })
+      expect(g.getAttribute('transform')).toBe('translate(10, 20) scale(1)')
     })
 
-    it('adjusts view dimensions by zoom', () => {
-      const svg = makeSvg(800, 600)
-      applyViewport(svg, { panX: 0, panY: 0, zoom: 2 })
-      expect(svg.getAttribute('viewBox')).toBe('0 0 400 300')
-      svg.remove()
+    it('applies zoom in the transform', () => {
+      const g = document.createElementNS('http://www.w3.org/2000/svg', 'g') as SVGGElement
+      applyPanZoom(g, { panX: 0, panY: 0, zoom: 2 })
+      expect(g.getAttribute('transform')).toBe('translate(0, 0) scale(2)')
     })
 
-    it('zooming out increases viewBox size', () => {
-      const svg = makeSvg(800, 600)
-      applyViewport(svg, { panX: 0, panY: 0, zoom: 0.5 })
-      expect(svg.getAttribute('viewBox')).toBe('0 0 1600 1200')
-      svg.remove()
+    it('handles negative pan values', () => {
+      const g = document.createElementNS('http://www.w3.org/2000/svg', 'g') as SVGGElement
+      applyPanZoom(g, { panX: -50, panY: -100, zoom: 0.5 })
+      expect(g.getAttribute('transform')).toBe('translate(-50, -100) scale(0.5)')
     })
   })
 
@@ -153,8 +156,8 @@ describe('svg-pan-zoom', () => {
         { panX: 0, panY: 0, zoom: 1 },
         svg,
         400,
-        300, // center of SVG
-        -100, // scroll up
+        300,
+        -100,
       )
       expect(result.zoom).toBeGreaterThan(1)
       svg.remove()
@@ -167,7 +170,7 @@ describe('svg-pan-zoom', () => {
         svg,
         400,
         300,
-        100, // scroll down
+        100,
       )
       expect(result.zoom).toBeLessThan(1)
       svg.remove()
@@ -180,28 +183,29 @@ describe('svg-pan-zoom', () => {
         svg,
         400,
         300,
-        10000, // massive scroll down
+        10000,
       )
       expect(result.zoom).toBeGreaterThanOrEqual(0.1)
       svg.remove()
     })
 
-    it('clamps zoom to MAX_ZOOM (5)', () => {
+    it('clamps zoom to MAX_ZOOM (10)', () => {
       const svg = makeSvg(800, 600)
       const result = zoomAtPoint(
-        { panX: 0, panY: 0, zoom: 5 },
+        { panX: 0, panY: 0, zoom: 10 },
         svg,
         400,
         300,
-        -10000, // massive scroll up
+        -10000,
       )
-      expect(result.zoom).toBeLessThanOrEqual(5)
+      expect(result.zoom).toBeLessThanOrEqual(10)
       svg.remove()
     })
 
     it('adjusts pan to keep cursor point stable', () => {
       const svg = makeSvg(800, 600)
-      // Zoom at top-left corner: pan should stay near 0
+      // Zoom at top-left corner (0,0): world point = (0 - 0) / 1 = 0
+      // After zoom: newPanX = 0 - 0 * newZoom = 0 → pan should remain ~0
       const result = zoomAtPoint(
         { panX: 0, panY: 0, zoom: 1 },
         svg,
@@ -209,7 +213,6 @@ describe('svg-pan-zoom', () => {
         0,
         -100,
       )
-      // At top-left, fractionX=0, fractionY=0, so pan should remain ~0
       expect(result.panX).toBeCloseTo(0, 1)
       expect(result.panY).toBeCloseTo(0, 1)
       svg.remove()
@@ -221,10 +224,12 @@ describe('svg-pan-zoom', () => {
   describe('fitToView', () => {
     it('computes viewport that fits content with padding', () => {
       const svg = makeSvg(800, 600)
-      const result = fitToView(svg, 20)
+      const diagramContent = makeGElement(400, 300)
+      svg.appendChild(diagramContent)
+      const result = fitToView(svg, diagramContent, 20)
       // Content: 400x300, container: 800x600, padding: 20
-      // scaleX = 800 / (400+40) = ~1.818, scaleY = 600 / (300+40) = ~1.764
-      // zoom = min(1.818, 1.764) = ~1.764
+      // scaleX = (800-40) / 400 = 1.9, scaleY = (600-40) / 300 = 1.867
+      // zoom = min(1.9, 1.867) = ~1.867
       expect(result.zoom).toBeGreaterThan(1)
       expect(result.zoom).toBeLessThanOrEqual(5)
       svg.remove()
@@ -232,20 +237,32 @@ describe('svg-pan-zoom', () => {
 
     it('returns default viewport when bbox is empty', () => {
       const svg = makeSvg(800, 600)
-      Object.defineProperty(svg, 'getBBox', {
-        value: () => ({ x: 0, y: 0, width: 0, height: 0 }),
-        configurable: true,
-      })
-      const result = fitToView(svg)
+      const diagramContent = makeGElement(0, 0)
+      svg.appendChild(diagramContent)
+      const result = fitToView(svg, diagramContent)
       expect(result).toEqual(DEFAULT_VIEWPORT)
       svg.remove()
     })
 
     it('uses default padding of 20', () => {
       const svg = makeSvg(800, 600)
-      const withDefault = fitToView(svg)
-      const withExplicit = fitToView(svg, 20)
+      const diagramContent = makeGElement(400, 300)
+      svg.appendChild(diagramContent)
+      const withDefault = fitToView(svg, diagramContent)
+      const withExplicit = fitToView(svg, diagramContent, 20)
       expect(withDefault.zoom).toBeCloseTo(withExplicit.zoom, 5)
+      svg.remove()
+    })
+
+    it('centers the content in the viewport', () => {
+      const svg = makeSvg(800, 600)
+      const diagramContent = makeGElement(400, 300)
+      svg.appendChild(diagramContent)
+      const result = fitToView(svg, diagramContent, 20)
+      // panX = 800/2 - (0 + 400/2) * zoom = 400 - 200 * zoom
+      // panY = 600/2 - (0 + 300/2) * zoom = 300 - 150 * zoom
+      expect(result.panX).toBeCloseTo(400 - 200 * result.zoom, 1)
+      expect(result.panY).toBeCloseTo(300 - 150 * result.zoom, 1)
       svg.remove()
     })
   })
