@@ -45,6 +45,7 @@ import {
 import { buildEdgeMap, collectNodeIds, updateEdgesForNode } from './interaction/svg-edges'
 import type { EdgeMapData } from './interaction/svg-edges'
 import { exportLayout, importLayout, resetLayout, saveToLocalStorage, loadFromLocalStorage } from './interaction/persistence'
+import { encodeToUrl, decodeFromUrl } from './interaction/url-sharing'
 import { hitTestContainer, reparentNode } from './interaction/reparent'
 import { computeContainerFit, updateResize } from './interaction/svg-containers'
 import type { ResizeState } from './interaction/svg-containers'
@@ -600,6 +601,24 @@ function onResetLayout() {
   renderDiagram()
 }
 
+const shareTooltip = ref<string | null>(null)
+let shareTooltipTimer: ReturnType<typeof setTimeout> | undefined
+
+async function onShareLayout() {
+  try {
+    const hash = await encodeToUrl(layoutMap, mermaidInput.value)
+    const url = window.location.origin + window.location.pathname + hash
+    await navigator.clipboard.writeText(url)
+    shareTooltip.value = url.length > 8000
+      ? 'Copied — URL is long, may not work in all contexts'
+      : 'Copied!'
+  } catch {
+    shareTooltip.value = 'Failed to copy'
+  }
+  clearTimeout(shareTooltipTimer)
+  shareTooltipTimer = setTimeout(() => { shareTooltip.value = null }, 2000)
+}
+
 // ── Lifecycle ───────────────────────────────────────────────────────────────
 
 watch(mermaidInput, () => {
@@ -607,11 +626,21 @@ watch(mermaidInput, () => {
   renderDebounceTimer = setTimeout(renderDiagram, 400)
 })
 
-onMounted(() => {
-  // Try loading layout from localStorage
-  const saved = loadFromLocalStorage()
-  if (saved) {
-    layoutMap = saved
+onMounted(async () => {
+  // Try loading shared layout from URL hash first, then fall back to localStorage
+  const shared = await decodeFromUrl(window.location.hash)
+  if (shared) {
+    layoutMap = shared.layout
+    mermaidInput.value = shared.mermaidText
+    // Cancel the watcher-triggered debounced render — we'll render explicitly below
+    clearTimeout(renderDebounceTimer)
+    // Clear the hash so it doesn't persist across refreshes with stale data
+    history.replaceState(null, '', window.location.pathname)
+  } else {
+    const saved = loadFromLocalStorage()
+    if (saved) {
+      layoutMap = saved
+    }
   }
 
   document.addEventListener('keydown', onKeyDown)
@@ -625,6 +654,7 @@ onUnmounted(() => {
   document.removeEventListener('keyup', onKeyUp)
   clearTimeout(renderDebounceTimer)
   clearTimeout(persistDebounceTimer)
+  clearTimeout(shareTooltipTimer)
 })
 </script>
 
@@ -645,6 +675,10 @@ onUnmounted(() => {
           <input type="file" accept=".json" @change="onImportLayout" hidden />
         </label>
         <button class="header-btn" @click="onResetLayout" title="Reset layout to default">Reset</button>
+        <span class="share-wrapper">
+          <button class="header-btn share-btn" @click="onShareLayout" title="Copy shareable URL to clipboard">Share</button>
+          <span v-if="shareTooltip" class="share-tooltip">{{ shareTooltip }}</span>
+        </span>
       </div>
     </header>
 
@@ -817,6 +851,32 @@ body,
 .import-btn {
   display: inline-flex;
   align-items: center;
+}
+
+.share-wrapper {
+  position: relative;
+  display: inline-flex;
+}
+
+.share-btn {
+  color: var(--green);
+  border-color: rgba(0, 255, 136, 0.2);
+}
+
+.share-tooltip {
+  position: absolute;
+  bottom: -1.75rem;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 0.65rem;
+  color: var(--green);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.15rem 0.5rem;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 20;
 }
 
 .main-layout {

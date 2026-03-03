@@ -54,8 +54,7 @@ export function serializeLayout(layout: LayoutMap): string {
   return JSON.stringify(layout, null, 2)
 }
 
-export function deserializeLayout(json: string): LayoutMap {
-  const parsed: unknown = JSON.parse(json)
+export function validateLayout(parsed: unknown): LayoutMap {
   if (
     typeof parsed !== 'object' ||
     parsed === null ||
@@ -70,6 +69,11 @@ export function deserializeLayout(json: string): LayoutMap {
     throw new Error('Invalid layout JSON: version must be a number')
   }
   return layout
+}
+
+export function deserializeLayout(json: string): LayoutMap {
+  const parsed: unknown = JSON.parse(json)
+  return validateLayout(parsed)
 }
 
 /**
