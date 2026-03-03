@@ -59,6 +59,7 @@ const SAMPLE = `graph TD
 const mermaidInput = ref(SAMPLE)
 const svgContainerRef = ref<HTMLDivElement | null>(null)
 const errorMessage = ref<string | null>(null)
+const editorWidth = ref(320)
 let renderCounter = 0
 let renderDebounceTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -511,6 +512,34 @@ function onKeyUp(e: KeyboardEvent) {
   }
 }
 
+// ── Editor panel resize ─────────────────────────────────────────────────────
+
+const EDITOR_MIN_WIDTH = 180
+const EDITOR_MAX_WIDTH = 800
+
+function onGutterPointerDown(e: PointerEvent) {
+  const target = e.currentTarget as HTMLElement
+  target.setPointerCapture(e.pointerId)
+
+  const startX = e.clientX
+  const startWidth = editorWidth.value
+
+  function onMove(ev: PointerEvent) {
+    const dx = ev.clientX - startX
+    editorWidth.value = Math.min(EDITOR_MAX_WIDTH, Math.max(EDITOR_MIN_WIDTH, startWidth + dx))
+  }
+
+  function onUp() {
+    target.removeEventListener('pointermove', onMove)
+    target.removeEventListener('pointerup', onUp)
+    target.removeEventListener('lostpointercapture', onUp)
+  }
+
+  target.addEventListener('pointermove', onMove)
+  target.addEventListener('pointerup', onUp)
+  target.addEventListener('lostpointercapture', onUp)
+}
+
 // ── Persistence ─────────────────────────────────────────────────────────────
 
 function debouncedPersist() {
@@ -611,7 +640,7 @@ onUnmounted(() => {
     </header>
 
     <div class="main-layout">
-      <aside class="editor-panel">
+      <aside class="editor-panel" :style="{ width: editorWidth + 'px' }">
         <div class="terminal-header" aria-hidden="true">
           <div class="terminal-dot"></div>
           <div class="terminal-dot"></div>
@@ -625,6 +654,11 @@ onUnmounted(() => {
           placeholder="graph TD&#10;  A[Service] --> B[DB]"
         />
       </aside>
+
+      <div
+        class="resize-gutter"
+        @pointerdown.prevent="onGutterPointerDown"
+      ></div>
 
       <section class="diagram-panel">
         <div
@@ -777,13 +811,37 @@ body,
 }
 
 .editor-panel {
-  width: 320px;
-  min-width: 240px;
+  min-width: 180px;
+  max-width: 800px;
   display: flex;
   flex-direction: column;
   padding: 0.75rem;
   background: var(--bg-surface);
-  border-right: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.resize-gutter {
+  width: 5px;
+  cursor: col-resize;
+  background: var(--border);
+  transition: background 0.15s;
+  flex-shrink: 0;
+  position: relative;
+}
+
+.resize-gutter::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -3px;
+  right: -3px;
+  bottom: 0;
+}
+
+.resize-gutter:hover,
+.resize-gutter:active {
+  background: var(--green);
+  box-shadow: 0 0 8px var(--glow);
 }
 
 .terminal-header {
