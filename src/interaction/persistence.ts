@@ -9,20 +9,45 @@ import { createEmptyLayout, serializeLayout, deserializeLayout } from '../core/l
 
 const LOCAL_STORAGE_KEY = 'fleximaid-layout'
 
+// ── Internal helpers ────────────────────────────────────────────────────────
+
+function triggerDownload(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+// ── Export / Import ─────────────────────────────────────────────────────────
+
 /**
  * Export the current layout as a downloadable JSON file.
  */
 export function exportLayout(layout: LayoutMap): void {
   const json = serializeLayout(layout)
   const blob = new Blob([json], { type: 'application/json' })
-  const url = URL.createObjectURL(blob)
+  triggerDownload(blob, 'fleximaid-layout.json')
+}
 
-  const a = document.createElement('a')
-  a.href = url
-  a.download = 'fleximaid-layout.json'
-  a.click()
+/**
+ * Export the current SVG diagram as a downloadable .svg file.
+ *
+ * Clones the SVG element, ensures the xmlns attribute is present,
+ * and triggers a download.
+ */
+export function exportSvg(svg: SVGSVGElement): void {
+  const clone = svg.cloneNode(true) as SVGSVGElement
+  // Ensure the xmlns attribute is set (required for standalone SVG files)
+  if (!clone.getAttribute('xmlns')) {
+    clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg')
+  }
 
-  URL.revokeObjectURL(url)
+  const serializer = new XMLSerializer()
+  const svgString = serializer.serializeToString(clone)
+  const blob = new Blob([svgString], { type: 'image/svg+xml' })
+  triggerDownload(blob, 'fleximaid-diagram.svg')
 }
 
 /**

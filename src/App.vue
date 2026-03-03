@@ -44,7 +44,7 @@ import {
 } from './interaction/svg-select'
 import { buildEdgeMap, collectNodeIds, updateEdgesForNode } from './interaction/svg-edges'
 import type { EdgeMapData } from './interaction/svg-edges'
-import { exportLayout, importLayout, resetLayout, saveToLocalStorage, loadFromLocalStorage } from './interaction/persistence'
+import { exportLayout, exportSvg, importLayout, resetLayout, saveToLocalStorage, loadFromLocalStorage } from './interaction/persistence'
 import { encodeToUrl, decodeFromUrl } from './interaction/url-sharing'
 import { hitTestContainer, reparentNode } from './interaction/reparent'
 import { computeContainerFit, updateResize } from './interaction/svg-containers'
@@ -68,6 +68,7 @@ const errorMessage = ref<string | null>(null)
 const editorWidth = ref(320)
 const editorCollapsed = ref(false)
 const showShortcuts = ref(false)
+const showSaveMenu = ref(false)
 const currentTheme = ref<Theme>(getStoredTheme())
 
 function onToggleTheme() {
@@ -561,6 +562,19 @@ function onKeyDown(e: KeyboardEvent) {
     e.preventDefault()
   }
   if (e.key === 'Escape') {
+    // Close save dropdown if open
+    if (showSaveMenu.value) {
+      showSaveMenu.value = false
+      e.preventDefault()
+      return
+    }
+    // Close shortcuts overlay if open
+    if (showShortcuts.value) {
+      showShortcuts.value = false
+      e.preventDefault()
+      return
+    }
+
     const interactionLayer = getInteractionLayer()
     selectionState = clearSelection()
     if (interactionLayer) {
@@ -582,6 +596,16 @@ function onKeyUp(e: KeyboardEvent) {
     spaceHeld = false
     const svg = getSvg()
     if (svg) svg.style.cursor = 'default'
+  }
+}
+
+function onDocumentClick(e: MouseEvent) {
+  // Close save dropdown when clicking outside it
+  if (showSaveMenu.value) {
+    const target = e.target as HTMLElement
+    if (!target.closest('.save-wrapper')) {
+      showSaveMenu.value = false
+    }
   }
 }
 
@@ -624,6 +648,14 @@ function debouncedPersist() {
 
 function onExportLayout() {
   exportLayout(layoutMap)
+  showSaveMenu.value = false
+}
+
+function onExportSvg() {
+  const svg = getSvg()
+  if (!svg) return
+  exportSvg(svg)
+  showSaveMenu.value = false
 }
 
 async function onImportLayout(e: Event) {
@@ -721,6 +753,7 @@ onMounted(async () => {
 
   document.addEventListener('keydown', onKeyDown)
   document.addEventListener('keyup', onKeyUp)
+  document.addEventListener('click', onDocumentClick)
 
   nextTick(() => renderDiagram())
 })
@@ -728,6 +761,7 @@ onMounted(async () => {
 onUnmounted(() => {
   document.removeEventListener('keydown', onKeyDown)
   document.removeEventListener('keyup', onKeyUp)
+  document.removeEventListener('click', onDocumentClick)
   clearTimeout(renderDebounceTimer)
   clearTimeout(persistDebounceTimer)
   clearTimeout(shareTooltipTimer)
@@ -764,7 +798,13 @@ onUnmounted(() => {
           {{ editorCollapsed ? 'Edit' : 'Hide' }}
         </button>
         <button class="header-btn" @click="onFitToView" title="Fit to view">Fit</button>
-        <button class="header-btn" @click="onExportLayout" title="Save layout to file">Save</button>
+        <span class="save-wrapper">
+          <button class="header-btn" @click="showSaveMenu = !showSaveMenu" title="Export diagram" :aria-expanded="showSaveMenu" aria-haspopup="true" aria-controls="save-menu">Save</button>
+          <div v-if="showSaveMenu" id="save-menu" class="save-dropdown" role="menu">
+            <button class="save-option" role="menuitem" @click="onExportSvg">SVG</button>
+            <button class="save-option" role="menuitem" @click="onExportLayout">JSON Layout</button>
+          </div>
+        </span>
         <label class="header-btn import-btn" title="Load layout from file">
           Load
           <input type="file" accept=".json" @change="onImportLayout" hidden />
@@ -950,6 +990,49 @@ body,
 .import-btn {
   display: inline-flex;
   align-items: center;
+}
+
+.save-wrapper {
+  position: relative;
+  display: inline-flex;
+}
+
+.save-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 120px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  overflow: hidden;
+}
+
+.save-option {
+  padding: 0.4rem 0.75rem;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  text-align: left;
+  background: transparent;
+  color: var(--fg);
+  border: none;
+  cursor: pointer;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  transition: background 0.15s, color 0.15s;
+}
+
+.save-option:hover {
+  background: rgba(0, 255, 136, 0.08);
+  color: var(--green);
+}
+
+.save-option + .save-option {
+  border-top: 1px solid var(--border);
 }
 
 .share-wrapper {

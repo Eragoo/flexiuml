@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { saveToLocalStorage, loadFromLocalStorage, resetLayout } from '../persistence'
+import { saveToLocalStorage, loadFromLocalStorage, resetLayout, exportSvg, exportLayout } from '../persistence'
 import { createEmptyLayout, updateNodePosition } from '../../core/layout-map'
 
 // Mock localStorage for jsdom environment (which may not fully implement it)
@@ -97,6 +97,104 @@ describe('persistence', () => {
     it('calls localStorage.removeItem', () => {
       resetLayout()
       expect(localStorageMock.removeItem).toHaveBeenCalled()
+    })
+  })
+
+  // ----- exportLayout -----
+
+  describe('exportLayout', () => {
+    it('creates a download link with .json filename and application/json blob', () => {
+      const layout = createEmptyLayout()
+      updateNodePosition(layout, 'node1', 10, 20)
+
+      const clickSpy = vi.fn()
+      const createElementSpy = vi.spyOn(document, 'createElement').mockReturnValue({
+        set href(_v: string) { /* noop */ },
+        get href() { return '' },
+        download: '',
+        click: clickSpy,
+      } as unknown as HTMLAnchorElement)
+
+      const createObjectURLSpy = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:test')
+      const revokeObjectURLSpy = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
+
+      exportLayout(layout)
+
+      expect(createObjectURLSpy).toHaveBeenCalledOnce()
+      const blob = createObjectURLSpy.mock.calls[0]![0] as Blob
+      expect(blob.type).toBe('application/json')
+      expect(clickSpy).toHaveBeenCalledOnce()
+      expect(revokeObjectURLSpy).toHaveBeenCalledWith('blob:test')
+
+      createElementSpy.mockRestore()
+      createObjectURLSpy.mockRestore()
+      revokeObjectURLSpy.mockRestore()
+    })
+  })
+
+  // ----- exportSvg -----
+
+  describe('exportSvg', () => {
+    it('creates a download link with .svg filename', () => {
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+      svg.setAttribute('width', '100')
+      svg.setAttribute('height', '100')
+
+      const clickSpy = vi.fn()
+      const createElementSpy = vi.spyOn(document, 'createElement').mockReturnValue({
+        set href(v: string) { /* captured */ },
+        get href() { return '' },
+        download: '',
+        click: clickSpy,
+      } as unknown as HTMLAnchorElement)
+
+      const createObjectURLSpy = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:test')
+      const revokeObjectURLSpy = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
+
+      exportSvg(svg)
+
+      expect(createObjectURLSpy).toHaveBeenCalledOnce()
+      const blob = createObjectURLSpy.mock.calls[0]![0] as Blob
+      expect(blob.type).toBe('image/svg+xml')
+      expect(clickSpy).toHaveBeenCalledOnce()
+      expect(revokeObjectURLSpy).toHaveBeenCalledWith('blob:test')
+
+      createElementSpy.mockRestore()
+      createObjectURLSpy.mockRestore()
+      revokeObjectURLSpy.mockRestore()
+    })
+
+    it('includes xml namespace in the exported SVG', async () => {
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+      svg.setAttribute('width', '200')
+      const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
+      rect.setAttribute('width', '50')
+      rect.setAttribute('height', '50')
+      svg.appendChild(rect)
+
+      let capturedBlob: Blob | null = null
+      const createElementSpy = vi.spyOn(document, 'createElement').mockReturnValue({
+        set href(_v: string) { /* noop */ },
+        get href() { return '' },
+        download: '',
+        click: vi.fn(),
+      } as unknown as HTMLAnchorElement)
+      const createObjectURLSpy = vi.spyOn(URL, 'createObjectURL').mockImplementation((blob) => {
+        capturedBlob = blob as Blob
+        return 'blob:test'
+      })
+      const revokeObjectURLSpy = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
+
+      exportSvg(svg)
+
+      expect(capturedBlob).not.toBeNull()
+      const text = await capturedBlob!.text()
+      expect(text).toContain('xmlns="http://www.w3.org/2000/svg"')
+      expect(text).toContain('<rect')
+
+      createElementSpy.mockRestore()
+      createObjectURLSpy.mockRestore()
+      revokeObjectURLSpy.mockRestore()
     })
   })
 })
