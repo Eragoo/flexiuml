@@ -43,7 +43,7 @@ import {
   mergeSelections,
 } from './interaction/svg-select'
 import { buildEdgeMap, collectNodeIds, updateEdgesForNode } from './interaction/svg-edges'
-import type { EdgeMap } from './interaction/svg-edges'
+import type { EdgeMapData } from './interaction/svg-edges'
 import { exportLayout, importLayout, resetLayout, saveToLocalStorage, loadFromLocalStorage } from './interaction/persistence'
 import { hitTestContainer, reparentNode } from './interaction/reparent'
 import { computeContainerFit, updateResize } from './interaction/svg-containers'
@@ -88,7 +88,7 @@ let clickedIsContainer = false
 let spaceHeld = false
 
 // Edge map: rebuilt after each render
-let edgeMap: EdgeMap = new Map()
+let edgeMapData: EdgeMapData = { edges: new Map(), initialTranslates: new Map() }
 
 // Persistence debounce
 let persistDebounceTimer: ReturnType<typeof setTimeout> | undefined
@@ -168,7 +168,7 @@ async function renderDiagram() {
 
     // Build edge map for edge following
     const knownNodeIds = collectNodeIds(svg, NODE_SELECTOR, extractNodeId)
-    edgeMap = buildEdgeMap(svg, knownNodeIds)
+    edgeMapData = buildEdgeMap(svg, knownNodeIds, getTranslate)
 
     // Make node groups show grab cursor
     setupNodeCursors()
@@ -294,7 +294,7 @@ function onPointerMove(e: PointerEvent) {
 
     // Update edges for all dragged nodes
     for (const id of dragState.draggedIds) {
-      updateEdgesForNode(svg, id, edgeMap, getTranslate)
+      updateEdgesForNode(svg, id, edgeMapData, getTranslate)
     }
 
     // Update selection overlays to follow dragged elements
@@ -370,7 +370,7 @@ function onPointerUp(e: PointerEvent) {
       // Run edge sync for all affected nodes
       if (svg) {
         for (const id of dragState.draggedIds) {
-          updateEdgesForNode(svg, id, edgeMap, getTranslate)
+          updateEdgesForNode(svg, id, edgeMapData, getTranslate)
         }
       }
 
@@ -538,9 +538,9 @@ async function onImportLayout(e: Event) {
     const svg = getSvg()
     if (svg) {
       const knownNodeIds = collectNodeIds(svg, NODE_SELECTOR, extractNodeId)
-      edgeMap = buildEdgeMap(svg, knownNodeIds)
+      edgeMapData = buildEdgeMap(svg, knownNodeIds, getTranslate)
       for (const id of diagramIndex.nodes.keys()) {
-        updateEdgesForNode(svg, id, edgeMap, getTranslate)
+        updateEdgesForNode(svg, id, edgeMapData, getTranslate)
       }
     }
 

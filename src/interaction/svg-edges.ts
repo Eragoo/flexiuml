@@ -29,6 +29,13 @@ export interface EdgeInfo {
 /** Map from node ID → list of connected edges (both as start and end). */
 export type EdgeMap = Map<string, EdgeInfo[]>
 
+/** Edge map bundled with initial node translates captured at build time. */
+export interface EdgeMapData {
+  edges: EdgeMap
+  /** Node translate values at the time the edge map was built (i.e. the Mermaid layout positions). */
+  initialTranslates: Map<string, Point>
+}
+
 /**
  * Parse a Mermaid edge ID to extract start and end node IDs.
  * Format: "L_<start>_<end>_<counter>"
@@ -112,13 +119,28 @@ export function collectNodeIds(
 
 /**
  * Build an edge map from the SVG: for each node, which edges connect to/from it.
+ * Also captures the initial translate of each endpoint node so that later delta
+ * calculations are relative (current − initial) rather than absolute.
  * This should be called once after rendering and cached.
  */
 export function buildEdgeMap(
   svg: SVGSVGElement,
   knownNodeIds: Set<string>,
-): EdgeMap {
+  getTranslate: (el: SVGElement) => Point,
+): EdgeMapData {
   const edgeMap: EdgeMap = new Map()
+  const initialTranslates = new Map<string, Point>()
+
+  // Helper: capture a node's initial translate (once per node)
+  function captureInitial(nodeId: string): void {
+    if (initialTranslates.has(nodeId)) return
+    const el = svg.querySelector(`[data-id="${CSS.escape(nodeId)}"]`)
+    if (el && el instanceof SVGElement) {
+      initialTranslates.set(nodeId, getTranslate(el))
+    } else {
+      initialTranslates.set(nodeId, { x: 0, y: 0 })
+    }
+  }
 
   // Find all edge paths (they have data-edge="true" or class containing "flowchart-link")
   const edgePaths = svg.querySelectorAll<SVGPathElement>(
@@ -135,6 +157,10 @@ export function buildEdgeMap(
 
     const originalPoints = decodeEdgePoints(dataPoints)
     if (originalPoints.length === 0) continue
+
+    // Capture initial translates for both endpoints
+    captureInitial(parsed.start)
+    captureInitial(parsed.end)
 
     // Find the corresponding edge label (if any)
     const labelEl = svg.querySelector<SVGGElement>(
@@ -161,7 +187,7 @@ export function buildEdgeMap(
     }
   }
 
-  return edgeMap
+  return { edges: edgeMap, initialTranslates }
 }
 
 /**
@@ -279,16 +305,20 @@ export function computeLabelPosition(points: Point[]): Point {
 
 /**
  * Get the current translate delta of a node from its original position.
- * This is just the node's current translate transform.
+ * Returns (currentTranslate − initialTranslate) so that the result is the
+ * movement since the edge map was built (not the absolute translate).
  */
 export function getNodeDelta(
   svg: SVGSVGElement,
   nodeId: string,
   getTranslate: (el: SVGElement) => Point,
+  initialTranslates: Map<string, Point>,
 ): Point {
   const nodeEl = svg.querySelector(`[data-id="${CSS.escape(nodeId)}"]`)
   if (!nodeEl || !(nodeEl instanceof SVGElement)) return { x: 0, y: 0 }
-  return getTranslate(nodeEl)
+  const current = getTranslate(nodeEl)
+  const initial = initialTranslates.get(nodeId) ?? { x: 0, y: 0 }
+  return { x: current.x - initial.x, y: current.y - initial.y }
 }
 
 /**
@@ -298,10 +328,10 @@ export function getNodeDelta(
 export function updateEdgesForNode(
   svg: SVGSVGElement,
   nodeId: string,
-  edgeMap: EdgeMap,
+  edgeMapData: EdgeMapData,
   getTranslate: (el: SVGElement) => Point,
 ): void {
-  const edges = edgeMap.get(nodeId)
+  const edges = edgeMapData.edges.get(nodeId)
   if (!edges) return
 
   // Track which edges we've already updated (an edge may appear twice if
@@ -313,7 +343,7 @@ export function updateEdgesForNode(
   function getCachedDelta(nid: string): Point {
     let d = deltaCache.get(nid)
     if (d === undefined) {
-      d = getNodeDelta(svg, nid, getTranslate)
+      d = getNodeDelta(svg, nid, getTranslate, edgeMapData.initialTranslates)
       deltaCache.set(nid, d)
     }
     return d

@@ -10,7 +10,7 @@ import {
   getNodeDelta,
   updateEdgesForNode,
 } from '../svg-edges'
-import type { EdgeMap, EdgeInfo } from '../svg-edges'
+import type { EdgeMap, EdgeInfo, EdgeMapData } from '../svg-edges'
 import type { Point } from '../../core/types'
 
 // jsdom does not implement CSS.escape; polyfill it for tests.
@@ -52,6 +52,14 @@ function encodePoints(points: Point[]): string {
 }
 
 describe('svg-edges', () => {
+  /** Shared mock that reads translate(x, y) from an element's transform attribute. */
+  const mockGetTranslate = (el: SVGElement): Point => {
+    const t = el.getAttribute('transform') ?? ''
+    const m = t.match(/translate\(([^,]+),\s*([^)]+)\)/)
+    if (!m) return { x: 0, y: 0 }
+    return { x: parseFloat(m[1]!), y: parseFloat(m[2]!) }
+  }
+
   // ========== parseEdgeId ==========
   describe('parseEdgeId', () => {
     // Happy Path
@@ -262,7 +270,8 @@ describe('svg-edges', () => {
       const svg = buildTestSvg(['A', 'B'], [{ edgeId: 'L_A_B_0', points }])
       const known = new Set(['A', 'B'])
 
-      const map = buildEdgeMap(svg, known)
+      const data = buildEdgeMap(svg, known, mockGetTranslate)
+      const map = data.edges
 
       // Both A and B should have the edge
       expect(map.has('A')).toBe(true)
@@ -297,7 +306,8 @@ describe('svg-edges', () => {
       )
       const known = new Set(['A', 'B', 'C'])
 
-      const map = buildEdgeMap(svg, known)
+      const data = buildEdgeMap(svg, known, mockGetTranslate)
+      const map = data.edges
 
       expect(map.get('A')!.length).toBe(2)
       expect(map.get('B')!.length).toBe(1)
@@ -310,8 +320,8 @@ describe('svg-edges', () => {
       const svg = buildTestSvg(['A', 'B'], [])
       const known = new Set(['A', 'B'])
 
-      const map = buildEdgeMap(svg, known)
-      expect(map.size).toBe(0)
+      const data = buildEdgeMap(svg, known, mockGetTranslate)
+      expect(data.edges.size).toBe(0)
 
       document.body.removeChild(svg)
     })
@@ -327,8 +337,8 @@ describe('svg-edges', () => {
       )
       const known = new Set(['A', 'B'])
 
-      const map = buildEdgeMap(svg, known)
-      expect(map.size).toBe(0)
+      const data = buildEdgeMap(svg, known, mockGetTranslate)
+      expect(data.edges.size).toBe(0)
 
       document.body.removeChild(svg)
     })
@@ -340,8 +350,8 @@ describe('svg-edges', () => {
       )
       const known = new Set(['A', 'B'])
 
-      const map = buildEdgeMap(svg, known)
-      expect(map.size).toBe(0)
+      const data = buildEdgeMap(svg, known, mockGetTranslate)
+      expect(data.edges.size).toBe(0)
 
       document.body.removeChild(svg)
     })
@@ -354,7 +364,8 @@ describe('svg-edges', () => {
       const svg = buildTestSvg(['A'], [{ edgeId: 'L_A_A_0', points: pts }])
       const known = new Set(['A'])
 
-      const map = buildEdgeMap(svg, known)
+      const data = buildEdgeMap(svg, known, mockGetTranslate)
+      const map = data.edges
 
       // Self-loop: should only appear once for node A
       expect(map.get('A')!.length).toBe(1)
@@ -365,6 +376,10 @@ describe('svg-edges', () => {
     it('finds edge label elements when present', () => {
       const svg = makeSvg()
       const known = new Set(['A', 'B'])
+
+      // Add node elements (needed for initial translate capture)
+      svg.appendChild(makeG({ 'data-id': 'A', class: 'node' }))
+      svg.appendChild(makeG({ 'data-id': 'B', class: 'node' }))
 
       // Add an edge path
       const pts = [
@@ -384,8 +399,53 @@ describe('svg-edges', () => {
       edgeLabelG.appendChild(innerLabel)
       svg.appendChild(edgeLabelG)
 
-      const map = buildEdgeMap(svg, known)
-      expect(map.get('A')![0]!.labelEl).toBe(edgeLabelG)
+      const data = buildEdgeMap(svg, known, mockGetTranslate)
+      expect(data.edges.get('A')![0]!.labelEl).toBe(edgeLabelG)
+
+      document.body.removeChild(svg)
+    })
+
+    it('captures initial translates for endpoint nodes', () => {
+      const svg = makeSvg()
+      const known = new Set(['A', 'B'])
+
+      svg.appendChild(makeG({ 'data-id': 'A', class: 'node', transform: 'translate(100, 50)' }))
+      svg.appendChild(makeG({ 'data-id': 'B', class: 'node', transform: 'translate(300, 50)' }))
+
+      const pts = [{ x: 100, y: 50 }, { x: 300, y: 50 }]
+      svg.appendChild(makePath({
+        'data-id': 'L_A_B_0',
+        'data-points': encodePoints(pts),
+        d: 'M100,50L300,50',
+      }))
+
+      const data = buildEdgeMap(svg, known, mockGetTranslate)
+
+      expect(data.initialTranslates.get('A')).toEqual({ x: 100, y: 50 })
+      expect(data.initialTranslates.get('B')).toEqual({ x: 300, y: 50 })
+
+      document.body.removeChild(svg)
+    })
+
+    it('falls back to zero initial translate when node element is missing from DOM', () => {
+      const svg = makeSvg()
+      // Only node A exists in DOM; node C is referenced by an edge but has no DOM element
+      const known = new Set(['A', 'C'])
+
+      svg.appendChild(makeG({ 'data-id': 'A', class: 'node', transform: 'translate(100, 50)' }))
+
+      const pts = [{ x: 100, y: 50 }, { x: 300, y: 50 }]
+      svg.appendChild(makePath({
+        'data-id': 'L_A_C_0',
+        'data-points': encodePoints(pts),
+        d: 'M100,50L300,50',
+      }))
+
+      const data = buildEdgeMap(svg, known, mockGetTranslate)
+
+      expect(data.initialTranslates.get('A')).toEqual({ x: 100, y: 50 })
+      // C has no DOM element, so initial translate falls back to { x: 0, y: 0 }
+      expect(data.initialTranslates.get('C')).toEqual({ x: 0, y: 0 })
 
       document.body.removeChild(svg)
     })
@@ -606,7 +666,7 @@ describe('svg-edges', () => {
   // ========== getNodeDelta ==========
   describe('getNodeDelta', () => {
     // Happy Path
-    it('returns translate of a node element', () => {
+    it('returns delta from initial translate', () => {
       const svg = makeSvg()
       const g = makeG({
         'data-id': 'A',
@@ -614,14 +674,44 @@ describe('svg-edges', () => {
       })
       svg.appendChild(g)
 
-      const mockGetTranslate = (el: SVGElement): Point => {
-        const t = el.getAttribute('transform') ?? ''
-        const m = t.match(/translate\(([^,]+),\s*([^)]+)\)/)
-        if (!m) return { x: 0, y: 0 }
-        return { x: parseFloat(m[1]!), y: parseFloat(m[2]!) }
-      }
+      // Initial was (10, 5), current is (15, 25) → delta = (5, 20)
+      const initials = new Map([['A', { x: 10, y: 5 }]])
 
-      expect(getNodeDelta(svg, 'A', mockGetTranslate)).toEqual({
+      expect(getNodeDelta(svg, 'A', mockGetTranslate, initials)).toEqual({
+        x: 5,
+        y: 20,
+      })
+      document.body.removeChild(svg)
+    })
+
+    it('returns full translate when initial is zero', () => {
+      const svg = makeSvg()
+      const g = makeG({
+        'data-id': 'A',
+        transform: 'translate(15, 25)',
+      })
+      svg.appendChild(g)
+
+      const initials = new Map([['A', { x: 0, y: 0 }]])
+
+      expect(getNodeDelta(svg, 'A', mockGetTranslate, initials)).toEqual({
+        x: 15,
+        y: 25,
+      })
+      document.body.removeChild(svg)
+    })
+
+    it('returns full translate when node not in initialTranslates', () => {
+      const svg = makeSvg()
+      const g = makeG({
+        'data-id': 'A',
+        transform: 'translate(15, 25)',
+      })
+      svg.appendChild(g)
+
+      const initials = new Map<string, Point>()
+
+      expect(getNodeDelta(svg, 'A', mockGetTranslate, initials)).toEqual({
         x: 15,
         y: 25,
       })
@@ -630,9 +720,9 @@ describe('svg-edges', () => {
 
     it('returns {x:0, y:0} when node not found', () => {
       const svg = makeSvg()
-      const mockGetTranslate = (): Point => ({ x: 99, y: 99 })
+      const initials = new Map<string, Point>()
 
-      expect(getNodeDelta(svg, 'nonexistent', mockGetTranslate)).toEqual({
+      expect(getNodeDelta(svg, 'nonexistent', mockGetTranslate, initials)).toEqual({
         x: 0,
         y: 0,
       })
@@ -641,21 +731,16 @@ describe('svg-edges', () => {
 
     it('handles CSS-escaped data-id lookups', () => {
       const svg = makeSvg()
-      // Node with special characters in ID
       const g = makeG({
         'data-id': 'node:1',
-        transform: 'translate(5, 10)',
+        transform: 'translate(25, 30)',
       })
       svg.appendChild(g)
 
-      const mockGetTranslate = (el: SVGElement): Point => {
-        const t = el.getAttribute('transform') ?? ''
-        const m = t.match(/translate\(([^,]+),\s*([^)]+)\)/)
-        if (!m) return { x: 0, y: 0 }
-        return { x: parseFloat(m[1]!), y: parseFloat(m[2]!) }
-      }
+      // Initial was (20, 20), current is (25, 30) → delta = (5, 10)
+      const initials = new Map([['node:1', { x: 20, y: 20 }]])
 
-      expect(getNodeDelta(svg, 'node:1', mockGetTranslate)).toEqual({
+      expect(getNodeDelta(svg, 'node:1', mockGetTranslate, initials)).toEqual({
         x: 5,
         y: 10,
       })
@@ -681,9 +766,14 @@ describe('svg-edges', () => {
       }
     }
 
+    /** Wrap a bare EdgeMap in EdgeMapData with zero initial translates. */
+    function wrapEdgeMap(edges: EdgeMap, initials: Map<string, Point> = new Map()): EdgeMapData {
+      return { edges, initialTranslates: initials }
+    }
+
     it('updates path d attribute for connected edges', () => {
       const svg = makeSvg()
-      // Add node elements with translate
+      // Nodes start at (0,0), then A moves to (10,20)
       const gA = makeG({ 'data-id': 'A', transform: 'translate(10, 20)' })
       const gB = makeG({ 'data-id': 'B', transform: 'translate(0, 0)' })
       svg.appendChild(gA)
@@ -693,14 +783,7 @@ describe('svg-edges', () => {
       svg.appendChild(edge.pathEl)
       const edgeMap: EdgeMap = new Map([['A', [edge]]])
 
-      const mockGetTranslate = (el: SVGElement): Point => {
-        const t = el.getAttribute('transform') ?? ''
-        const m = t.match(/translate\(([^,]+),\s*([^)]+)\)/)
-        if (!m) return { x: 0, y: 0 }
-        return { x: parseFloat(m[1]!), y: parseFloat(m[2]!) }
-      }
-
-      updateEdgesForNode(svg, 'A', edgeMap, mockGetTranslate)
+      updateEdgesForNode(svg, 'A', wrapEdgeMap(edgeMap), mockGetTranslate)
 
       // Path d should be updated (not original M0,0L100,100)
       const newD = edge.pathEl.getAttribute('d')
@@ -713,11 +796,9 @@ describe('svg-edges', () => {
 
     it('does nothing when node has no edges in map', () => {
       const svg = makeSvg()
-      const edgeMap: EdgeMap = new Map()
-      const mockGetTranslate = (): Point => ({ x: 0, y: 0 })
 
       // Should not throw
-      updateEdgesForNode(svg, 'Z', edgeMap, mockGetTranslate)
+      updateEdgesForNode(svg, 'Z', wrapEdgeMap(new Map()), mockGetTranslate)
       document.body.removeChild(svg)
     })
 
@@ -733,9 +814,7 @@ describe('svg-edges', () => {
       svg.appendChild(edge.pathEl)
       const edgeMap: EdgeMap = new Map([['A', [edge]]])
 
-      const mockGetTranslate = (): Point => ({ x: 0, y: 0 })
-
-      updateEdgesForNode(svg, 'A', edgeMap, mockGetTranslate)
+      updateEdgesForNode(svg, 'A', wrapEdgeMap(edgeMap), mockGetTranslate)
 
       // Label should have a transform set
       const transform = labelEl.getAttribute('transform')
@@ -764,16 +843,7 @@ describe('svg-edges', () => {
       // The same edge reference in the list twice (as would happen for self-loops)
       const edgeMap: EdgeMap = new Map([['A', [edge, edge]]])
 
-      const calls: SVGElement[] = []
-      const mockGetTranslate = (el: SVGElement): Point => {
-        calls.push(el)
-        const t = el.getAttribute('transform') ?? ''
-        const m = t.match(/translate\(([^,]+),\s*([^)]+)\)/)
-        if (!m) return { x: 0, y: 0 }
-        return { x: parseFloat(m[1]!), y: parseFloat(m[2]!) }
-      }
-
-      updateEdgesForNode(svg, 'A', edgeMap, mockGetTranslate)
+      updateEdgesForNode(svg, 'A', wrapEdgeMap(edgeMap), mockGetTranslate)
 
       // The path d should be set (edge was processed)
       const d = edge.pathEl.getAttribute('d')
@@ -796,17 +866,113 @@ describe('svg-edges', () => {
         ['B', [edge]],
       ])
 
-      const mockGetTranslate = (el: SVGElement): Point => {
-        const t = el.getAttribute('transform') ?? ''
-        const m = t.match(/translate\(([^,]+),\s*([^)]+)\)/)
-        if (!m) return { x: 0, y: 0 }
-        return { x: parseFloat(m[1]!), y: parseFloat(m[2]!) }
-      }
-
-      updateEdgesForNode(svg, 'A', edgeMap, mockGetTranslate)
+      updateEdgesForNode(svg, 'A', wrapEdgeMap(edgeMap), mockGetTranslate)
 
       // Start shifted by A's (10,0), end shifted by B's (0,10)
       expect(edge.pathEl.getAttribute('d')).toBe('M10,0L100,110')
+
+      document.body.removeChild(svg)
+    })
+
+    it('computes correct edge positions when nodes have non-zero initial translates (bug: double-offset)', () => {
+      // Simulates real Mermaid scenario:
+      // - Mermaid renders nodes A at translate(100, 50) and B at translate(300, 50)
+      // - Edge original points go from (100, 50) to (300, 50) (already include initial positions)
+      // - User drags node A by (20, 10) → new translate = (120, 60)
+      // - Edge start should be at (120, 60), NOT (220, 110) (which is the double-offset bug)
+      const svg = makeSvg()
+
+      // Nodes with initial Mermaid layout translates
+      const gA = makeG({ 'data-id': 'A', transform: 'translate(100, 50)' })
+      const gB = makeG({ 'data-id': 'B', transform: 'translate(300, 50)' })
+      svg.appendChild(gA)
+      svg.appendChild(gB)
+
+      // Build edge map (captures initial translates)
+      const edgePts = [{ x: 100, y: 50 }, { x: 300, y: 50 }]
+      const path = makePath({
+        'data-id': 'L_A_B_0',
+        'data-points': encodePoints(edgePts),
+        d: 'M100,50L300,50',
+      })
+      svg.appendChild(path)
+
+      const known = new Set(['A', 'B'])
+      const edgeMapData = buildEdgeMap(svg, known, mockGetTranslate)
+
+      // Now simulate dragging A by (20, 10): new translate = (120, 60)
+      gA.setAttribute('transform', 'translate(120, 60)')
+      // B stays at original position
+
+      updateEdgesForNode(svg, 'A', edgeMapData, mockGetTranslate)
+
+      const newD = path.getAttribute('d')
+      // Correct: start at original (100,50) + delta (20,10) = (120, 60)
+      //          end at original (300,50) + delta (0,0) = (300, 50)
+      expect(newD).toBe('M120,60L300,50')
+
+      document.body.removeChild(svg)
+    })
+
+    it('handles accumulated delta across multiple drags without rebuilding edge map', () => {
+      // After first drag A from (100,50) → (120,60), drag A again to (140,70).
+      // initialTranslates still has A=(100,50), so delta = (40,20). Edge start = (100+40, 50+20) = (140, 70).
+      const svg = makeSvg()
+      const gA = makeG({ 'data-id': 'A', transform: 'translate(100, 50)' })
+      const gB = makeG({ 'data-id': 'B', transform: 'translate(300, 50)' })
+      svg.appendChild(gA)
+      svg.appendChild(gB)
+
+      const edgePts = [{ x: 100, y: 50 }, { x: 300, y: 50 }]
+      const path = makePath({
+        'data-id': 'L_A_B_0',
+        'data-points': encodePoints(edgePts),
+        d: 'M100,50L300,50',
+      })
+      svg.appendChild(path)
+
+      const known = new Set(['A', 'B'])
+      const edgeMapData = buildEdgeMap(svg, known, mockGetTranslate)
+
+      // First drag: A moves to (120, 60)
+      gA.setAttribute('transform', 'translate(120, 60)')
+      updateEdgesForNode(svg, 'A', edgeMapData, mockGetTranslate)
+      expect(path.getAttribute('d')).toBe('M120,60L300,50')
+
+      // Second drag: A moves further to (140, 70)
+      gA.setAttribute('transform', 'translate(140, 70)')
+      updateEdgesForNode(svg, 'A', edgeMapData, mockGetTranslate)
+      expect(path.getAttribute('d')).toBe('M140,70L300,50')
+
+      document.body.removeChild(svg)
+    })
+
+    it('handles self-loop with non-zero initial translates', () => {
+      const svg = makeSvg()
+      const gA = makeG({ 'data-id': 'A', transform: 'translate(50, 50)' })
+      svg.appendChild(gA)
+
+      // Self-loop: both endpoints are node A
+      const edgePts = [{ x: 50, y: 30 }, { x: 70, y: 50 }, { x: 50, y: 70 }]
+      const path = makePath({
+        'data-id': 'L_A_A_0',
+        'data-points': encodePoints(edgePts),
+        d: 'M50,30L70,50L50,70',
+      })
+      svg.appendChild(path)
+
+      const known = new Set(['A'])
+      const edgeMapData = buildEdgeMap(svg, known, mockGetTranslate)
+
+      // Drag A by (10, 5): new translate = (60, 55), delta = (10, 5)
+      gA.setAttribute('transform', 'translate(60, 55)')
+      updateEdgesForNode(svg, 'A', edgeMapData, mockGetTranslate)
+
+      // All points should shift uniformly by (10, 5) since both endpoints are the same node
+      const newD = path.getAttribute('d')
+      // 3-point edge uses Bezier: verify start and end are shifted correctly
+      expect(newD).toMatch(/^M60,35/) // first point: (50+10, 30+5)
+      expect(newD).toMatch(/L60,75$/) // last point: (50+10, 70+5)
 
       document.body.removeChild(svg)
     })
