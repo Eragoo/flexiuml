@@ -60,6 +60,12 @@ const mermaidInput = ref(SAMPLE)
 const svgContainerRef = ref<HTMLDivElement | null>(null)
 const errorMessage = ref<string | null>(null)
 const editorWidth = ref(320)
+const editorCollapsed = ref(false)
+
+function toggleEditor() {
+  editorCollapsed.value = !editorCollapsed.value
+}
+
 let renderCounter = 0
 let renderDebounceTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -629,6 +635,9 @@ onUnmounted(() => {
       <h1>Flexi<span class="accent">Maid</span></h1>
       <span class="subtitle">paste mermaid &middot; drag to rearrange</span>
       <div class="header-actions">
+        <button class="header-btn toggle-editor-btn" @click="toggleEditor" :title="editorCollapsed ? 'Show editor' : 'Hide editor'" :aria-expanded="!editorCollapsed" aria-controls="editor-panel">
+          {{ editorCollapsed ? 'Edit' : 'Hide' }}
+        </button>
         <button class="header-btn" @click="onFitToView" title="Fit to view">Fit</button>
         <button class="header-btn" @click="onExportLayout" title="Save layout to file">Save</button>
         <label class="header-btn import-btn" title="Load layout from file">
@@ -640,7 +649,12 @@ onUnmounted(() => {
     </header>
 
     <div class="main-layout">
-      <aside class="editor-panel" :style="{ width: editorWidth + 'px' }">
+      <aside
+        v-show="!editorCollapsed"
+        id="editor-panel"
+        class="editor-panel"
+        :style="{ width: editorWidth + 'px' }"
+      >
         <div class="terminal-header" aria-hidden="true">
           <div class="terminal-dot"></div>
           <div class="terminal-dot"></div>
@@ -656,6 +670,7 @@ onUnmounted(() => {
       </aside>
 
       <div
+        v-show="!editorCollapsed"
         class="resize-gutter"
         @pointerdown.prevent="onGutterPointerDown"
       ></div>
@@ -917,11 +932,64 @@ body,
   width: 100%;
   height: 100%;
   cursor: default;
+  touch-action: none;
 }
 
 .svg-container :deep(svg) {
   width: 100%;
   height: 100%;
   display: block;
+}
+
+/* ── Mobile / tablet responsive ──────────────────────────────────────────── */
+
+.toggle-editor-btn {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .app-header {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
+  }
+
+  .app-header h1 {
+    font-size: 1rem;
+  }
+
+  .subtitle {
+    display: none;
+  }
+
+  .header-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  .toggle-editor-btn {
+    display: inline-flex;
+  }
+
+  .main-layout {
+    flex-direction: column;
+  }
+
+  .editor-panel {
+    width: 100% !important;
+    min-width: unset;
+    max-width: unset;
+    max-height: 35vh;
+    min-height: 120px;
+    flex-shrink: 0;
+  }
+
+  .resize-gutter {
+    display: none;
+  }
+
+  .diagram-panel {
+    min-height: 0;
+  }
 }
 </style>
