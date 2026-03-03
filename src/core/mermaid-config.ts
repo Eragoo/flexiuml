@@ -17,11 +17,23 @@ export function initMermaid(): void {
   if (initialized) return
   mermaid.initialize({
     startOnLoad: false,
-    theme: 'default',
+    theme: 'dark',
+    darkMode: true,
     securityLevel: 'strict',
     flowchart: {
       useMaxWidth: false,
       htmlLabels: true,
+    },
+    // Colors kept in sync with CSS variables in App.vue (:root)
+    themeVariables: {
+      background: '#0d0d0d',
+      primaryColor: '#1a3a2a',
+      primaryTextColor: '#e0e0e0',
+      primaryBorderColor: '#00ff88',
+      lineColor: '#00ff88',
+      secondaryColor: '#1a1a2e',
+      tertiaryColor: '#0a0a0a',
+      fontFamily: "'JetBrains Mono', 'Courier New', monospace",
     },
   })
   initialized = true

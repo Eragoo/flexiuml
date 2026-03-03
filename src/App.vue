@@ -595,9 +595,10 @@ onUnmounted(() => {
 
 <template>
   <div class="app-container">
+    <div class="scanline" aria-hidden="true"></div>
     <header class="app-header">
-      <h1>FlexiMaid</h1>
-      <span class="subtitle">Paste Mermaid &middot; Drag nodes to rearrange</span>
+      <h1>Flexi<span class="accent">Maid</span></h1>
+      <span class="subtitle">paste mermaid &middot; drag to rearrange</span>
       <div class="header-actions">
         <button class="header-btn" @click="onFitToView" title="Fit to view">Fit</button>
         <button class="header-btn" @click="onExportLayout" title="Save layout to file">Save</button>
@@ -611,7 +612,12 @@ onUnmounted(() => {
 
     <div class="main-layout">
       <aside class="editor-panel">
-        <label for="mermaid-input">Mermaid Input</label>
+        <div class="terminal-header" aria-hidden="true">
+          <div class="terminal-dot"></div>
+          <div class="terminal-dot"></div>
+          <div class="terminal-dot"></div>
+        </div>
+        <label for="mermaid-input"><span class="prompt">$</span> mermaid input</label>
         <textarea
           id="mermaid-input"
           v-model="mermaidInput"
@@ -650,13 +656,28 @@ onUnmounted(() => {
   box-sizing: border-box;
 }
 
+:root {
+  --font-mono: 'JetBrains Mono', 'Courier New', monospace;
+  --bg: #0a0a0a;
+  --bg-surface: #111111;
+  --bg-diagram: #0d0d0d;
+  --fg: #e0e0e0;
+  --green: #00ff88;
+  --dim: #777;
+  --border: rgba(255, 255, 255, 0.06);
+  --glow: rgba(0, 255, 136, 0.15);
+  --error: #ff6b6b;
+  --error-bg: rgba(220, 38, 38, 0.1);
+  --error-border: rgba(220, 38, 38, 0.2);
+}
+
 html,
 body,
 #app {
   height: 100%;
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
-  background: #0f172a;
-  color: #e2e8f0;
+  font-family: var(--font-mono);
+  background: var(--bg);
+  color: var(--fg);
 }
 </style>
 
@@ -665,6 +686,24 @@ body,
   display: flex;
   flex-direction: column;
   height: 100vh;
+  position: relative;
+}
+
+.scanline {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(255, 255, 255, 0.015) 2px,
+    rgba(255, 255, 255, 0.015) 4px
+  );
+  z-index: 50;
 }
 
 .app-header {
@@ -672,19 +711,26 @@ body,
   align-items: baseline;
   gap: 1rem;
   padding: 0.75rem 1.25rem;
-  background: #1e293b;
-  border-bottom: 1px solid #334155;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
 }
 
 .app-header h1 {
   font-size: 1.25rem;
   font-weight: 700;
-  color: #38bdf8;
+  color: var(--fg);
+  letter-spacing: -0.02em;
+}
+
+.app-header h1 .accent {
+  color: var(--green);
+  text-shadow: 0 0 20px var(--glow);
 }
 
 .subtitle {
-  font-size: 0.8rem;
-  color: #94a3b8;
+  font-size: 0.75rem;
+  color: var(--dim);
+  letter-spacing: 0.05em;
 }
 
 .header-actions {
@@ -695,17 +741,28 @@ body,
 
 .header-btn {
   padding: 0.25rem 0.75rem;
-  font-size: 0.75rem;
-  background: #334155;
-  color: #e2e8f0;
-  border: 1px solid #475569;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--fg);
+  border: 1px solid var(--border);
   border-radius: 4px;
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background 0.15s, border-color 0.15s, color 0.15s, text-shadow 0.15s;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
 }
 
 .header-btn:hover {
-  background: #475569;
+  background: rgba(0, 255, 136, 0.08);
+  border-color: rgba(0, 255, 136, 0.2);
+  color: var(--green);
+  text-shadow: 0 0 8px var(--glow);
+}
+
+.header-btn:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
 }
 
 .import-btn {
@@ -725,40 +782,63 @@ body,
   display: flex;
   flex-direction: column;
   padding: 0.75rem;
-  background: #1e293b;
-  border-right: 1px solid #334155;
+  background: var(--bg-surface);
+  border-right: 1px solid var(--border);
 }
 
+.terminal-header {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 0.75rem;
+}
+
+.terminal-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--dim);
+}
+
+.terminal-dot:nth-child(1) { background: #ff5f57; }
+.terminal-dot:nth-child(2) { background: #ffbd2e; }
+.terminal-dot:nth-child(3) { background: #28c840; }
+
 .editor-panel label {
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: #94a3b8;
+  letter-spacing: 0.1em;
+  color: var(--dim);
   margin-bottom: 0.5rem;
+}
+
+.editor-panel label .prompt {
+  color: var(--green);
 }
 
 .editor-panel textarea {
   flex: 1;
   resize: none;
-  background: #0f172a;
-  color: #e2e8f0;
-  border: 1px solid #334155;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
   border-radius: 6px;
   padding: 0.75rem;
-  font-family: 'JetBrains Mono', 'Fira Code', monospace;
-  font-size: 0.85rem;
-  line-height: 1.5;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  line-height: 1.7;
   outline: none;
+  caret-color: var(--green);
 }
 
-.editor-panel textarea:focus {
-  border-color: #38bdf8;
+.editor-panel textarea:focus-visible {
+  border-color: var(--green);
+  box-shadow: 0 0 0 2px rgba(0, 255, 136, 0.3);
 }
 
 .diagram-panel {
   flex: 1;
   position: relative;
-  background: #f8fafc;
+  background: var(--bg-diagram);
   overflow: hidden;
 }
 
@@ -768,10 +848,10 @@ body,
   left: 0;
   right: 0;
   padding: 0.75rem 1rem;
-  background: #fef2f2;
-  color: #dc2626;
-  font-size: 0.85rem;
-  border-bottom: 1px solid #fecaca;
+  background: var(--error-bg);
+  color: var(--error);
+  font-size: 0.8rem;
+  border-bottom: 1px solid var(--error-border);
   z-index: 10;
 }
 
