@@ -31,8 +31,14 @@ describe('theme', () => {
   // ── Happy Path ──────────────────────────────────────────────────────────
 
   describe('getStoredTheme', () => {
-    it('returns "dark" when nothing is stored', () => {
+    it('returns OS preference when nothing is stored (dark)', () => {
+      window.matchMedia = vi.fn().mockReturnValue({ matches: true }) as unknown as typeof window.matchMedia
       expect(getStoredTheme()).toBe('dark')
+    })
+
+    it('returns OS preference when nothing is stored (light)', () => {
+      window.matchMedia = vi.fn().mockReturnValue({ matches: false }) as unknown as typeof window.matchMedia
+      expect(getStoredTheme()).toBe('light')
     })
 
     it('returns the stored theme', () => {
@@ -40,7 +46,8 @@ describe('theme', () => {
       expect(getStoredTheme()).toBe('light')
     })
 
-    it('returns "dark" for an invalid stored value', () => {
+    it('falls back to OS preference for an invalid stored value', () => {
+      window.matchMedia = vi.fn().mockReturnValue({ matches: true }) as unknown as typeof window.matchMedia
       localStorage.setItem('fleximaid-theme', 'neon')
       expect(getStoredTheme()).toBe('dark')
     })

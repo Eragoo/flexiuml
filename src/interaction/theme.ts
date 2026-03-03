@@ -34,7 +34,7 @@ const THEME_VARS: Record<Theme, Record<string, string>> = {
 export function getStoredTheme(): Theme {
   const stored = localStorage.getItem(THEME_KEY)
   if (stored === 'dark' || stored === 'light') return stored
-  return 'dark'
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
 }
 
 export function storeTheme(theme: Theme): void {
