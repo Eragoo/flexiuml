@@ -49,6 +49,11 @@ import { encodeToUrl, decodeFromUrl } from './interaction/url-sharing'
 import { hitTestContainer, reparentNode } from './interaction/reparent'
 import { computeContainerFit, updateResize } from './interaction/svg-containers'
 import type { ResizeState } from './interaction/svg-containers'
+import { createHistory, pushState, undo, redo } from './interaction/undo-history'
+import type { UndoHistory } from './interaction/undo-history'
+import { SHORTCUTS } from './interaction/keyboard-shortcuts'
+import { getStoredTheme, storeTheme, applyTheme } from './interaction/theme'
+import type { Theme } from './interaction/theme'
 
 const SAMPLE = `graph TD
   A[Web App] --> B[API Gateway]
@@ -62,6 +67,14 @@ const svgContainerRef = ref<HTMLDivElement | null>(null)
 const errorMessage = ref<string | null>(null)
 const editorWidth = ref(320)
 const editorCollapsed = ref(false)
+const showShortcuts = ref(false)
+const currentTheme = ref<Theme>(getStoredTheme())
+
+function onToggleTheme() {
+  currentTheme.value = currentTheme.value === 'dark' ? 'light' : 'dark'
+  applyTheme(currentTheme.value)
+  storeTheme(currentTheme.value)
+}
 
 function toggleEditor() {
   editorCollapsed.value = !editorCollapsed.value
@@ -75,6 +88,7 @@ let renderDebounceTimer: ReturnType<typeof setTimeout> | undefined
 let structure: SvgStructure | null = null
 let diagramIndex: DiagramIndex = { nodes: new Map(), containers: new Map() }
 let layoutMap: LayoutMap = createEmptyLayout()
+let undoHistory: UndoHistory = createHistory(layoutMap)
 
 // ── Interaction state (non-reactive for 60fps performance) ──────────────────
 
@@ -117,6 +131,30 @@ function getInteractionLayer(): SVGGElement | null {
 
 function getDiagramContent(): SVGGElement | null {
   return structure?.diagramContent ?? null
+}
+
+/**
+ * Apply a layout from undo/redo history: update DOM positions, edges, selection overlays, and persist.
+ */
+function applyHistoryLayout() {
+  layoutMap = undoHistory.present
+  applyLayoutToDOM(layoutMap, diagramIndex)
+
+  const svg = getSvg()
+  if (svg) {
+    const knownNodeIds = collectNodeIds(svg, NODE_SELECTOR, extractNodeId)
+    edgeMapData = buildEdgeMap(svg, knownNodeIds, getTranslate)
+    for (const id of diagramIndex.nodes.keys()) {
+      updateEdgesForNode(svg, id, edgeMapData, getTranslate)
+    }
+  }
+
+  const interactionLayer = getInteractionLayer()
+  if (interactionLayer) {
+    renderSelectionOverlays(interactionLayer, diagramIndex, selectionState)
+  }
+
+  debouncedPersist()
 }
 
 // ── Render pipeline ─────────────────────────────────────────────────────────
@@ -163,6 +201,8 @@ async function renderDiagram() {
       // New/changed diagram — seed layout from Mermaid's default positions
       layoutMap = seedLayoutFromDOM(layoutMap, diagramIndex)
       layoutMap = { ...layoutMap, mermaidHash: hash }
+      // Reset undo history for the new diagram
+      undoHistory = createHistory(layoutMap)
     }
 
     // Fit to view
@@ -356,6 +396,7 @@ function onPointerUp(e: PointerEvent) {
       }
     }
     debouncedPersist()
+    undoHistory = pushState(undoHistory, layoutMap)
     return
   }
 
@@ -421,6 +462,7 @@ function onPointerUp(e: PointerEvent) {
       }
 
       debouncedPersist()
+      undoHistory = pushState(undoHistory, layoutMap)
     }
 
     // Restore cursors on dragged elements
@@ -487,6 +529,30 @@ function onKeyDown(e: KeyboardEvent) {
   // Don't intercept keys when user is typing in an input/textarea
   const tag = (e.target as HTMLElement)?.tagName
   if (tag === 'TEXTAREA' || tag === 'INPUT') return
+
+  // Undo: Ctrl+Z / Cmd+Z
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z') {
+    e.preventDefault()
+    undoHistory = undo(undoHistory)
+    applyHistoryLayout()
+    return
+  }
+
+  // Redo: Ctrl+Shift+Z / Cmd+Shift+Z  or  Ctrl+Y / Cmd+Y
+  if (((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'z') ||
+      ((e.ctrlKey || e.metaKey) && e.key === 'y')) {
+    e.preventDefault()
+    undoHistory = redo(undoHistory)
+    applyHistoryLayout()
+    return
+  }
+
+  // Toggle shortcuts overlay: ?
+  if (e.key === '?' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    showShortcuts.value = !showShortcuts.value
+    e.preventDefault()
+    return
+  }
 
   if (e.key === ' ' || e.code === 'Space') {
     spaceHeld = true
@@ -586,6 +652,8 @@ async function onImportLayout(e: Event) {
       selectionState = clearSelection()
       clearSelectionOverlays(interactionLayer)
     }
+
+    undoHistory = pushState(undoHistory, layoutMap)
   } catch (err) {
     errorMessage.value = `Failed to import layout: ${err instanceof Error ? err.message : String(err)}`
   }
@@ -598,7 +666,9 @@ function onResetLayout() {
   layoutMap = resetLayout()
 
   // Re-render to get Mermaid default positions
-  renderDiagram()
+  renderDiagram().then(() => {
+    undoHistory = pushState(undoHistory, layoutMap)
+  })
 }
 
 const shareTooltip = ref<string | null>(null)
@@ -643,6 +713,12 @@ onMounted(async () => {
     }
   }
 
+  // Initialize undo history from the loaded layout
+  undoHistory = createHistory(layoutMap)
+
+  // Apply stored theme
+  applyTheme(currentTheme.value)
+
   document.addEventListener('keydown', onKeyDown)
   document.addEventListener('keyup', onKeyUp)
 
@@ -661,6 +737,25 @@ onUnmounted(() => {
 <template>
   <div class="app-container">
     <div class="scanline" aria-hidden="true"></div>
+
+    <!-- Shortcuts overlay -->
+    <Transition name="shortcuts-fade">
+      <div v-if="showShortcuts" class="shortcuts-overlay" @click.self="showShortcuts = false">
+        <div class="shortcuts-panel">
+          <div class="shortcuts-header">
+            <span class="shortcuts-title">Keyboard Shortcuts</span>
+            <button class="shortcuts-close" @click="showShortcuts = false" aria-label="Close shortcuts">&times;</button>
+          </div>
+          <ul class="shortcuts-list">
+            <li v-for="(s, i) in SHORTCUTS" :key="i" class="shortcut-row">
+              <kbd class="shortcut-keys">{{ s.keys }}</kbd>
+              <span class="shortcut-desc">{{ s.description }}</span>
+            </li>
+          </ul>
+        </div>
+      </div>
+    </Transition>
+
     <header class="app-header">
       <h1>Flexi<span class="accent">Maid</span></h1>
       <span class="subtitle">paste mermaid &middot; drag to rearrange</span>
@@ -679,6 +774,10 @@ onUnmounted(() => {
           <button class="header-btn share-btn" @click="onShareLayout" title="Copy shareable URL to clipboard">Share</button>
           <span v-if="shareTooltip" class="share-tooltip">{{ shareTooltip }}</span>
         </span>
+        <button class="header-btn" @click="showShortcuts = !showShortcuts" title="Keyboard shortcuts (?)">?</button>
+        <button class="header-btn theme-btn" @click="onToggleTheme" :title="currentTheme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'">
+          {{ currentTheme === 'dark' ? 'Light' : 'Dark' }}
+        </button>
       </div>
     </header>
 
@@ -999,6 +1098,99 @@ body,
   width: 100%;
   height: 100%;
   display: block;
+}
+
+/* ── Shortcuts overlay ────────────────────────────────────────────────────── */
+
+.shortcuts-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.shortcuts-panel {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1.25rem 1.5rem;
+  min-width: 320px;
+  max-width: 440px;
+  box-shadow: 0 0 40px rgba(0, 255, 136, 0.05);
+}
+
+.shortcuts-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1rem;
+}
+
+.shortcuts-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--green);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.shortcuts-close {
+  background: none;
+  border: none;
+  color: var(--dim);
+  font-size: 1.25rem;
+  cursor: pointer;
+  padding: 0 0.25rem;
+  line-height: 1;
+  transition: color 0.15s;
+}
+
+.shortcuts-close:hover {
+  color: var(--fg);
+}
+
+.shortcuts-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.shortcut-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.shortcut-keys {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.15rem 0.5rem;
+  color: var(--green);
+  white-space: nowrap;
+}
+
+.shortcut-desc {
+  font-size: 0.75rem;
+  color: var(--dim);
+  text-align: right;
+}
+
+.shortcuts-fade-enter-active,
+.shortcuts-fade-leave-active {
+  transition: opacity 0.15s ease;
+}
+
+.shortcuts-fade-enter-from,
+.shortcuts-fade-leave-to {
+  opacity: 0;
 }
 
 /* ── Mobile / tablet responsive ──────────────────────────────────────────── */
