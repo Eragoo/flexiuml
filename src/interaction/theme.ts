@@ -1,4 +1,5 @@
 export type Theme = 'dark' | 'light'
+export type ThemeMode = 'dark' | 'light' | 'auto'
 
 const THEME_KEY = 'fleximaid-theme'
 
@@ -31,14 +32,28 @@ const THEME_VARS: Record<Theme, Record<string, string>> = {
   },
 }
 
-export function getStoredTheme(): Theme {
-  const stored = localStorage.getItem(THEME_KEY)
-  if (stored === 'dark' || stored === 'light') return stored
+export const NEXT_MODE: Record<ThemeMode, ThemeMode> = {
+  dark: 'light',
+  light: 'auto',
+  auto: 'dark',
+}
+
+export function getOSTheme(): Theme {
   return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
 }
 
-export function storeTheme(theme: Theme): void {
-  localStorage.setItem(THEME_KEY, theme)
+export function getStoredMode(): ThemeMode {
+  const stored = localStorage.getItem(THEME_KEY)
+  if (stored === 'dark' || stored === 'light' || stored === 'auto') return stored
+  return 'auto'
+}
+
+export function storeMode(mode: ThemeMode): void {
+  localStorage.setItem(THEME_KEY, mode)
+}
+
+export function resolveTheme(mode: ThemeMode): Theme {
+  return mode === 'auto' ? getOSTheme() : mode
 }
 
 export function applyTheme(theme: Theme): void {
@@ -48,4 +63,17 @@ export function applyTheme(theme: Theme): void {
     root.style.setProperty(key, value)
   }
   root.setAttribute('data-theme', theme)
+}
+
+export function listenForOSThemeChange(onThemeChange?: (theme: Theme) => void): () => void {
+  const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
+  const handler = (e: MediaQueryListEvent) => {
+    if (getStoredMode() === 'auto') {
+      const osTheme: Theme = e.matches ? 'dark' : 'light'
+      applyTheme(osTheme)
+      onThemeChange?.(osTheme)
+    }
+  }
+  mediaQuery.addEventListener('change', handler)
+  return () => mediaQuery.removeEventListener('change', handler)
 }

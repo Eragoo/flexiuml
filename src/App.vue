@@ -52,8 +52,8 @@ import type { ResizeState } from './interaction/svg-containers'
 import { createHistory, pushState, undo, redo } from './interaction/undo-history'
 import type { UndoHistory } from './interaction/undo-history'
 import { SHORTCUTS } from './interaction/keyboard-shortcuts'
-import { getStoredTheme, storeTheme, applyTheme } from './interaction/theme'
-import type { Theme } from './interaction/theme'
+import { getStoredMode, storeMode, applyTheme, resolveTheme, listenForOSThemeChange, NEXT_MODE } from './interaction/theme'
+import type { ThemeMode } from './interaction/theme'
 
 const SAMPLE = `graph TD
   A[Web App] --> B[API Gateway]
@@ -69,12 +69,25 @@ const editorWidth = ref(320)
 const editorCollapsed = ref(false)
 const showShortcuts = ref(false)
 const showSaveMenu = ref(false)
-const currentTheme = ref<Theme>(getStoredTheme())
+const currentMode = ref<ThemeMode>(getStoredMode())
+let stopOSThemeListener: () => void = () => {}
+
+const THEME_BUTTON_LABEL: Record<ThemeMode, string> = {
+  dark: 'Dark',
+  light: 'Light',
+  auto: 'Auto',
+}
+
+const THEME_BUTTON_TITLE: Record<ThemeMode, string> = {
+  dark: 'Switch to light mode',
+  light: 'Switch to auto mode',
+  auto: 'Switch to dark mode',
+}
 
 function onToggleTheme() {
-  currentTheme.value = currentTheme.value === 'dark' ? 'light' : 'dark'
-  applyTheme(currentTheme.value)
-  storeTheme(currentTheme.value)
+  currentMode.value = NEXT_MODE[currentMode.value]
+  storeMode(currentMode.value)
+  applyTheme(resolveTheme(currentMode.value))
 }
 
 function toggleEditor() {
@@ -748,8 +761,9 @@ onMounted(async () => {
   // Initialize undo history from the loaded layout
   undoHistory = createHistory(layoutMap)
 
-  // Apply stored theme
-  applyTheme(currentTheme.value)
+  // Apply theme and listen for OS theme changes
+  applyTheme(resolveTheme(currentMode.value))
+  stopOSThemeListener = listenForOSThemeChange()
 
   document.addEventListener('keydown', onKeyDown)
   document.addEventListener('keyup', onKeyUp)
@@ -759,6 +773,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  stopOSThemeListener()
   document.removeEventListener('keydown', onKeyDown)
   document.removeEventListener('keyup', onKeyUp)
   document.removeEventListener('click', onDocumentClick)
@@ -815,8 +830,8 @@ onUnmounted(() => {
           <span v-if="shareTooltip" class="share-tooltip">{{ shareTooltip }}</span>
         </span>
         <button class="header-btn" @click="showShortcuts = !showShortcuts" title="Keyboard shortcuts (?)">?</button>
-        <button class="header-btn theme-btn" @click="onToggleTheme" :title="currentTheme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'">
-          {{ currentTheme === 'dark' ? 'Light' : 'Dark' }}
+        <button class="header-btn theme-btn" @click="onToggleTheme" :title="THEME_BUTTON_TITLE[currentMode]">
+          {{ THEME_BUTTON_LABEL[currentMode] }}
         </button>
       </div>
     </header>
