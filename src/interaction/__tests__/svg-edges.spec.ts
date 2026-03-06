@@ -977,4 +977,182 @@ describe('svg-edges', () => {
       document.body.removeChild(svg)
     })
   })
+
+  // ── Regression: edge recalculation after layout restore ─────────────────
+  // Simulates the shared-URL / undo-redo / import-layout flow where nodes
+  // are moved from Mermaid defaults to stored positions and edges must follow.
+
+  describe('edge recalculation after layout restore (regression)', () => {
+    /**
+     * Helper: sets up an SVG with two nodes and an edge between them at
+     * Mermaid-default positions. Returns everything needed to test edge
+     * updates after a layout restore.
+     */
+    function setupTwoNodeDiagram() {
+      const svg = makeSvg()
+
+      // Mermaid renders node A at (100, 50), node B at (300, 50)
+      const gA = makeG({ 'data-id': 'A', transform: 'translate(100, 50)' })
+      const gB = makeG({ 'data-id': 'B', transform: 'translate(300, 50)' })
+      svg.appendChild(gA)
+      svg.appendChild(gB)
+
+      // Edge from A to B with original Mermaid waypoints
+      const edgePts = [{ x: 150, y: 75 }, { x: 250, y: 75 }]
+      const path = makePath({
+        'data-id': 'L_A_B_0',
+        'data-points': encodePoints(edgePts),
+        d: 'M150,75L250,75',
+      })
+      svg.appendChild(path)
+
+      const knownIds = new Set(['A', 'B'])
+      return { svg, gA, gB, path, knownIds }
+    }
+
+    it('edges follow nodes when edge map is built BEFORE applying stored layout', () => {
+      // This is the CORRECT flow: buildEdgeMap → move nodes → updateEdgesForNode
+      const { svg, gA, gB, path, knownIds } = setupTwoNodeDiagram()
+
+      // 1. Build edge map at Mermaid-default positions (A=100,50  B=300,50)
+      const edgeMapData = buildEdgeMap(svg, knownIds, mockGetTranslate)
+
+      // 2. Apply stored layout: move A to (200, 100), B stays at (300, 50)
+      gA.setAttribute('transform', 'translate(200, 100)')
+
+      // 3. Update edges for all nodes
+      for (const nodeId of knownIds) {
+        updateEdgesForNode(svg, nodeId, edgeMapData, mockGetTranslate)
+      }
+
+      // Edge should be shifted: A delta = (100, 50), B delta = (0, 0)
+      // Start point: (150 + 100, 75 + 50) = (250, 125)
+      // End point: (250 + 0, 75 + 0) = (250, 75)
+      expect(path.getAttribute('d')).toBe('M250,125L250,75')
+
+      document.body.removeChild(svg)
+    })
+
+    it('edges do NOT follow nodes when edge map is built AFTER applying stored layout (demonstrates the bug)', () => {
+      // This is the BROKEN flow that was causing the shared-URL bug:
+      // move nodes → buildEdgeMap → updateEdgesForNode
+      // The edge map captures already-moved positions as initial, so delta = 0
+      const { svg, gA, gB, path, knownIds } = setupTwoNodeDiagram()
+
+      // 1. Apply stored layout FIRST: move A to (200, 100)
+      gA.setAttribute('transform', 'translate(200, 100)')
+
+      // 2. Build edge map AFTER move (captures moved positions as initial)
+      const edgeMapData = buildEdgeMap(svg, knownIds, mockGetTranslate)
+
+      // 3. Update edges — delta will be 0 since current == initial
+      for (const nodeId of knownIds) {
+        updateEdgesForNode(svg, nodeId, edgeMapData, mockGetTranslate)
+      }
+
+      // Edges are rewritten from originalPoints with zero delta — they go to
+      // Mermaid's original waypoints, NOT following the moved node.
+      // Start point: (150 + 0, 75 + 0) = (150, 75)  ← WRONG, should be (250, 125)
+      // End point: (250 + 0, 75 + 0) = (250, 75)
+      expect(path.getAttribute('d')).toBe('M150,75L250,75')
+
+      document.body.removeChild(svg)
+    })
+
+    it('edges follow nodes correctly when multiple nodes are moved', () => {
+      const { svg, gA, gB, path, knownIds } = setupTwoNodeDiagram()
+
+      // Build edge map at Mermaid defaults
+      const edgeMapData = buildEdgeMap(svg, knownIds, mockGetTranslate)
+
+      // Move both nodes
+      gA.setAttribute('transform', 'translate(200, 100)')  // delta = (100, 50)
+      gB.setAttribute('transform', 'translate(400, 150)')   // delta = (100, 100)
+
+      for (const nodeId of knownIds) {
+        updateEdgesForNode(svg, nodeId, edgeMapData, mockGetTranslate)
+      }
+
+      // Start: (150 + 100, 75 + 50) = (250, 125)
+      // End: (250 + 100, 75 + 100) = (350, 175)
+      expect(path.getAttribute('d')).toBe('M250,125L350,175')
+
+      document.body.removeChild(svg)
+    })
+
+    it('edges follow nodes correctly after undo (reapplying a previous layout)', () => {
+      const { svg, gA, gB, path, knownIds } = setupTwoNodeDiagram()
+
+      // Build edge map at Mermaid defaults
+      const edgeMapData = buildEdgeMap(svg, knownIds, mockGetTranslate)
+
+      // First move: A to (200, 100)
+      gA.setAttribute('transform', 'translate(200, 100)')
+      for (const nodeId of knownIds) {
+        updateEdgesForNode(svg, nodeId, edgeMapData, mockGetTranslate)
+      }
+      expect(path.getAttribute('d')).toBe('M250,125L250,75')
+
+      // "Undo": move A back to original position (100, 50)
+      gA.setAttribute('transform', 'translate(100, 50)')
+      for (const nodeId of knownIds) {
+        updateEdgesForNode(svg, nodeId, edgeMapData, mockGetTranslate)
+      }
+
+      // Delta for A is now (0, 0) again — edge should return to original waypoints
+      expect(path.getAttribute('d')).toBe('M150,75L250,75')
+
+      document.body.removeChild(svg)
+    })
+
+    it('handles three-node chain with middle node moved', () => {
+      const svg = makeSvg()
+
+      // Three nodes in a chain: A → B → C
+      const gA = makeG({ 'data-id': 'A', transform: 'translate(100, 50)' })
+      const gB = makeG({ 'data-id': 'B', transform: 'translate(200, 50)' })
+      const gC = makeG({ 'data-id': 'C', transform: 'translate(300, 50)' })
+      svg.appendChild(gA)
+      svg.appendChild(gB)
+      svg.appendChild(gC)
+
+      // Edge A→B
+      const ptsAB = [{ x: 150, y: 75 }, { x: 200, y: 75 }]
+      const pathAB = makePath({
+        'data-id': 'L_A_B_0',
+        'data-points': encodePoints(ptsAB),
+        d: 'M150,75L200,75',
+      })
+      svg.appendChild(pathAB)
+
+      // Edge B→C
+      const ptsBC = [{ x: 250, y: 75 }, { x: 300, y: 75 }]
+      const pathBC = makePath({
+        'data-id': 'L_B_C_0',
+        'data-points': encodePoints(ptsBC),
+        d: 'M250,75L300,75',
+      })
+      svg.appendChild(pathBC)
+
+      const knownIds = new Set(['A', 'B', 'C'])
+
+      // Build edge map at Mermaid defaults
+      const edgeMapData = buildEdgeMap(svg, knownIds, mockGetTranslate)
+
+      // Move only B down: (200, 50) → (200, 150), delta = (0, 100)
+      gB.setAttribute('transform', 'translate(200, 150)')
+
+      for (const nodeId of knownIds) {
+        updateEdgesForNode(svg, nodeId, edgeMapData, mockGetTranslate)
+      }
+
+      // Edge A→B: start (A delta=0,0) = (150, 75), end (B delta=0,100) = (200, 175)
+      expect(pathAB.getAttribute('d')).toBe('M150,75L200,175')
+
+      // Edge B→C: start (B delta=0,100) = (250, 175), end (C delta=0,0) = (300, 75)
+      expect(pathBC.getAttribute('d')).toBe('M250,175L300,75')
+
+      document.body.removeChild(svg)
+    })
+  })
 })

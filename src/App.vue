@@ -156,8 +156,9 @@ function applyHistoryLayout() {
 
   const svg = getSvg()
   if (svg) {
-    const knownNodeIds = collectNodeIds(svg, NODE_SELECTOR, extractNodeId)
-    edgeMapData = buildEdgeMap(svg, knownNodeIds, getTranslate)
+    // Reuse the existing edgeMapData (whose initialTranslates reflect Mermaid's
+    // original positions from the last render). This lets updateEdgesForNode
+    // correctly compute the delta from Mermaid defaults to the undo/redo state.
     for (const id of diagramIndex.nodes.keys()) {
       updateEdgesForNode(svg, id, edgeMapData, getTranslate)
     }
@@ -206,11 +207,23 @@ async function renderDiagram() {
     // Index diagram elements (nodes + containers)
     diagramIndex = indexDiagramElements(diagramContent)
 
+    // Build edge map from Mermaid's default positions BEFORE applying layout.
+    // This captures initial translates at Mermaid's original positions, so that
+    // edge paths can be correctly shifted when a stored layout is applied.
+    const knownNodeIds = collectNodeIds(svg, NODE_SELECTOR, extractNodeId)
+    edgeMapData = buildEdgeMap(svg, knownNodeIds, getTranslate)
+
     // Seed layout from DOM positions (first render) or reapply existing layout
     const hash = computeMermaidHash(mermaidInput.value)
     if (layoutMap.mermaidHash === hash && Object.keys(layoutMap.nodes).length > 0) {
       // Mermaid text unchanged — reapply stored positions
       applyLayoutToDOM(layoutMap, diagramIndex)
+
+      // Recalculate edge paths: nodes have moved from Mermaid defaults
+      // to stored positions, so edges must follow
+      for (const nodeId of diagramIndex.nodes.keys()) {
+        updateEdgesForNode(svg, nodeId, edgeMapData, getTranslate)
+      }
     } else {
       // New/changed diagram — seed layout from Mermaid's default positions
       layoutMap = seedLayoutFromDOM(layoutMap, diagramIndex)
@@ -227,10 +240,6 @@ async function renderDiagram() {
     // Reset selection
     selectionState = clearSelection()
     clearInteractionLayer(interactionLayer)
-
-    // Build edge map for edge following
-    const knownNodeIds = collectNodeIds(svg, NODE_SELECTOR, extractNodeId)
-    edgeMapData = buildEdgeMap(svg, knownNodeIds, getTranslate)
 
     // Make node groups show grab cursor
     setupNodeCursors()
@@ -681,11 +690,12 @@ async function onImportLayout(e: Event) {
     // Reapply to DOM
     applyLayoutToDOM(layoutMap, diagramIndex)
 
-    // Rebuild edge map and sync edges
+    // Sync edges to imported positions
     const svg = getSvg()
     if (svg) {
-      const knownNodeIds = collectNodeIds(svg, NODE_SELECTOR, extractNodeId)
-      edgeMapData = buildEdgeMap(svg, knownNodeIds, getTranslate)
+      // Reuse the existing edgeMapData (whose initialTranslates reflect Mermaid's
+      // original positions from the last render). This lets updateEdgesForNode
+      // correctly compute the delta from Mermaid defaults to the imported positions.
       for (const id of diagramIndex.nodes.keys()) {
         updateEdgesForNode(svg, id, edgeMapData, getTranslate)
       }
