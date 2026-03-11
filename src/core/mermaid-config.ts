@@ -1,13 +1,32 @@
 import mermaid from 'mermaid'
 
-/** Diagram types we support (restrict to flowchart + C4) */
-const SUPPORTED_DIAGRAM_PATTERNS = [
-  /^\s*(?:graph|flowchart)(?:\s+(TD|TB|BT|RL|LR))?/im,
-  /^\s*C4Context/im,
-  /^\s*C4Container/im,
-  /^\s*C4Component/im,
-  /^\s*C4Deployment/im,
-  /^\s*C4Dynamic/im,
+/** Regex patterns to detect known Mermaid diagram types from input text. */
+const DIAGRAM_PATTERNS: readonly { pattern: RegExp; type: string }[] = [
+  { pattern: /^\s*(?:graph|flowchart)(?:\s+(TD|TB|BT|RL|LR))?/i, type: 'flowchart' },
+  { pattern: /^\s*C4Context/i, type: 'c4' },
+  { pattern: /^\s*C4Container/i, type: 'c4' },
+  { pattern: /^\s*C4Component/i, type: 'c4' },
+  { pattern: /^\s*C4Deployment/i, type: 'c4' },
+  { pattern: /^\s*C4Dynamic/i, type: 'c4' },
+  { pattern: /^\s*sequenceDiagram/i, type: 'sequence' },
+  { pattern: /^\s*classDiagram/i, type: 'class' },
+  { pattern: /^\s*stateDiagram/i, type: 'state' },
+  { pattern: /^\s*erDiagram/i, type: 'er' },
+  { pattern: /^\s*gantt/i, type: 'gantt' },
+  { pattern: /^\s*pie/i, type: 'pie' },
+  { pattern: /^\s*gitGraph/i, type: 'gitgraph' },
+  { pattern: /^\s*journey/i, type: 'journey' },
+  { pattern: /^\s*mindmap/i, type: 'mindmap' },
+  { pattern: /^\s*timeline/i, type: 'timeline' },
+  { pattern: /^\s*sankey/i, type: 'sankey' },
+  { pattern: /^\s*xychart/i, type: 'xychart' },
+  { pattern: /^\s*block/i, type: 'block' },
+  { pattern: /^\s*quadrantChart/i, type: 'quadrant' },
+  { pattern: /^\s*requirementDiagram/i, type: 'requirement' },
+  { pattern: /^\s*packet/i, type: 'packet' },
+  { pattern: /^\s*kanban/i, type: 'kanban' },
+  { pattern: /^\s*architecture/i, type: 'architecture' },
+  { pattern: /^\s*zenuml/i, type: 'zenuml' },
 ]
 
 let initialized = false
@@ -40,15 +59,14 @@ export function initMermaid(): void {
 }
 
 /**
- * Check whether the input text is a supported diagram type.
- * Returns the detected type name or null if unsupported.
+ * Detect the Mermaid diagram type from input text.
+ * Returns the detected type name or null if unrecognized.
  */
 export function detectDiagramType(input: string): string | null {
   const firstLine = input.trim().split('\n')[0]?.trim() ?? ''
-  for (const pattern of SUPPORTED_DIAGRAM_PATTERNS) {
+  for (const { pattern, type } of DIAGRAM_PATTERNS) {
     if (pattern.test(firstLine)) {
-      if (/^C4/i.test(firstLine)) return 'c4'
-      return 'flowchart'
+      return type
     }
   }
   return null
@@ -57,7 +75,7 @@ export function detectDiagramType(input: string): string | null {
 /**
  * Render a Mermaid diagram to SVG string.
  * Returns the SVG markup string.
- * Throws if the diagram type is unsupported or Mermaid fails.
+ * Throws if Mermaid fails to parse or render the input.
  */
 export async function renderMermaidSvg(
   input: string,
@@ -65,23 +83,34 @@ export async function renderMermaidSvg(
 ): Promise<string> {
   initMermaid()
 
-  const diagramType = detectDiagramType(input)
-  if (!diagramType) {
-    throw new Error(
-      `Unsupported diagram type. Only flowchart and C4 diagrams are supported.`,
-    )
-  }
-
   const { svg } = await mermaid.render(containerId, input)
   return svg
 }
 
 /**
  * CSS selectors for finding draggable node groups in Mermaid-generated SVG.
- * Mermaid wraps each node in a <g> with class "node" (flowchart)
- * or specific C4 classes.
+ * Covers flowchart, C4, sequence, class, state, ER, and architecture diagram elements.
  */
-export const NODE_SELECTOR = '.node, .node-group, [class*="person"], [class*="container"], [class*="component"], [class*="system"]'
+export const NODE_SELECTOR = [
+  '.node',
+  '.node-group',
+  // C4 diagram elements
+  '[class*="person"]',
+  '[class*="container"]',
+  '[class*="component"]',
+  '[class*="system"]',
+  // Sequence diagram participants & notes
+  '.actor',
+  '.note',
+  // Class diagram
+  '.classGroup',
+  // State diagram
+  '.stateGroup',
+  // ER diagram
+  '.entity',
+  // Architecture diagram
+  '[class*="architecture-"]',
+].join(', ')
 
 /**
  * CSS selectors for finding container/boundary groups in Mermaid-generated SVG.
@@ -96,7 +125,7 @@ export const CONTAINER_SELECTOR = '.cluster, [class*="boundary"]'
  * Returns the logical node ID or the element's id attribute.
  */
 export function extractNodeId(el: SVGElement): string | null {
-  // Mermaid flowchart nodes have id like "flowchart-A-0" or data-id
+  // Prefer data-id if present (used by various Mermaid diagram types)
   const dataId = el.getAttribute('data-id')
   if (dataId) return dataId
 

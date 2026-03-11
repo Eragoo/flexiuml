@@ -76,11 +76,29 @@ describe('mermaid-config', () => {
       expect(detectDiagramType('c4context\n  stuff')).toBe('c4')
     })
 
-    it('returns null for unsupported diagram types', () => {
-      expect(detectDiagramType('sequenceDiagram\n  A->>B: Hello')).toBeNull()
-      expect(detectDiagramType('classDiagram\n  A <|-- B')).toBeNull()
-      expect(detectDiagramType('erDiagram\n  A ||--o{ B : has')).toBeNull()
-      expect(detectDiagramType('stateDiagram-v2\n  [*] --> A')).toBeNull()
+    // Additional diagram types
+    it.each([
+      ['sequenceDiagram\n  A->>B: Hello', 'sequence'],
+      ['classDiagram\n  A <|-- B', 'class'],
+      ['erDiagram\n  A ||--o{ B : has', 'er'],
+      ['stateDiagram-v2\n  [*] --> A', 'state'],
+      ['gantt\n  title A Gantt', 'gantt'],
+      ['pie\n  "A" : 50', 'pie'],
+      ['gitGraph\n  commit', 'gitgraph'],
+      ['journey\n  title My Journey', 'journey'],
+      ['mindmap\n  root((Root))', 'mindmap'],
+      ['timeline\n  title History', 'timeline'],
+      ['sankey-beta\n  A,B,5', 'sankey'],
+      ['xychart-beta\n  x-axis [A, B]', 'xychart'],
+      ['block-beta\n  a["A"]', 'block'],
+      ['quadrantChart\n  x-axis Low --> High', 'quadrant'],
+      ['requirementDiagram\n  requirement r1 {', 'requirement'],
+      ['packet-beta\n  0-7: "Src"', 'packet'],
+      ['kanban\n  Todo', 'kanban'],
+      ['architecture-beta\n  service api', 'architecture'],
+      ['zenuml\n  A.method()', 'zenuml'],
+    ] as const)('detects "%s" as %s', (input, expected) => {
+      expect(detectDiagramType(input)).toBe(expected)
     })
 
     it('returns null for empty input', () => {
@@ -153,6 +171,27 @@ describe('mermaid-config', () => {
       expect(NODE_SELECTOR).toContain('component')
       expect(NODE_SELECTOR).toContain('system')
     })
+
+    it('includes sequence diagram selectors', () => {
+      expect(NODE_SELECTOR).toContain('.actor')
+      expect(NODE_SELECTOR).toContain('.note')
+    })
+
+    it('includes class diagram selector', () => {
+      expect(NODE_SELECTOR).toContain('.classGroup')
+    })
+
+    it('includes state diagram selector', () => {
+      expect(NODE_SELECTOR).toContain('.stateGroup')
+    })
+
+    it('includes ER diagram selector', () => {
+      expect(NODE_SELECTOR).toContain('.entity')
+    })
+
+    it('includes architecture diagram selector', () => {
+      expect(NODE_SELECTOR).toContain('architecture-')
+    })
   })
 
   // ----- initMermaid -----
@@ -183,17 +222,28 @@ describe('mermaid-config', () => {
       expect(svg).toBe('<svg>rendered</svg>')
     })
 
-    // Error Scenarios
-    it('throws for unsupported diagram types', async () => {
-      await expect(
-        renderMermaidSvg('sequenceDiagram\n  A->>B: Hello', 'bad-id'),
-      ).rejects.toThrow('Unsupported diagram type')
+    it('renders a sequence diagram', async () => {
+      const svg = await renderMermaidSvg('sequenceDiagram\n  A->>B: Hello', 'seq-id')
+      expect(svg).toBe('<svg>rendered</svg>')
+      expect(mermaid.render).toHaveBeenCalledWith('seq-id', 'sequenceDiagram\n  A->>B: Hello')
     })
 
-    it('throws for empty input', async () => {
-      await expect(renderMermaidSvg('', 'empty-id')).rejects.toThrow(
-        'Unsupported diagram type',
-      )
+    it('renders a class diagram', async () => {
+      const svg = await renderMermaidSvg('classDiagram\n  A <|-- B', 'class-id')
+      expect(svg).toBe('<svg>rendered</svg>')
+    })
+
+    it('renders any input Mermaid accepts', async () => {
+      const svg = await renderMermaidSvg('pie\n  "A" : 50', 'pie-id')
+      expect(svg).toBe('<svg>rendered</svg>')
+    })
+
+    // Error Scenarios
+    it('propagates mermaid render errors', async () => {
+      vi.mocked(mermaid.render).mockRejectedValueOnce(new Error('Parse error'))
+      await expect(
+        renderMermaidSvg('not valid mermaid', 'bad-id'),
+      ).rejects.toThrow('Parse error')
     })
   })
 })
